@@ -1,0 +1,13 @@
+name: lpsn-manuscript
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pytorch=2.10.0
+  - torchvision=0.25.0
+  - pytorch-cuda=12.8
+  - pip
+  - pip:
+      - "spikingjelly @ git+https://github.com/fangwei123456/spikingjelly.git@9b87d38"

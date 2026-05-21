@@ -1,0 +1,5 @@
+# Manuscript runtime pins. Install a CUDA-compatible PyTorch wheel/index for
+# your platform if the default PyPI wheel is not suitable.
+torch==2.10.0
+torchvision==0.25.0
+spikingjelly @ git+https://github.com/fangwei123456/spikingjelly.git@9b87d38
