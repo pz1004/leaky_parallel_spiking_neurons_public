@@ -8,13 +8,59 @@ from argparse import Namespace
 from pathlib import Path
 
 from dataclasses import replace
+import yaml
 
 from experiments.config import ConditionConfig, ExperimentConfig
 from experiments.data import build_dataset, load_split_manifest, prepare_split_manifest
-from experiments.cli import _exact_signed_rank, command_analyze
+from experiments.cli import _exact_signed_rank, command_analyze, command_cache
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_cache_completion_uses_smoke_sample_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "split.json"
+            prepare_split_manifest("synthetic", root, manifest_path)
+            config_path = root / "smoke_cache.yml"
+            values = {
+                "schema_version": 1,
+                "experiment_id": "smoke_cache",
+                "dataset": "synthetic",
+                "model": "psn",
+                "seed": 42,
+                "time_steps": 8,
+                "data_root": str(root),
+                "split_manifest": str(manifest_path),
+                "output_root": str(root / "runs"),
+                "image_size": 32,
+                "batch_size": 1,
+                "effective_batch_size": 1,
+                "num_workers": 0,
+                "smoke_samples": 3,
+                "cache_frames": True,
+                "frame_cache_root": str(root / "cache"),
+            }
+            config_path.write_text(
+                yaml.safe_dump(values, sort_keys=True),
+                encoding="utf-8",
+            )
+            result = command_cache(
+                Namespace(
+                    config=config_path,
+                    condition=None,
+                    severity=None,
+                    draw=0,
+                    split=["train"],
+                    verify=False,
+                )
+            )
+            self.assertEqual(result, 0)
+            markers = list((root / "cache").rglob(".complete_*.json"))
+            self.assertEqual(len(markers), 1)
+            marker = json.loads(markers[0].read_text(encoding="utf-8"))
+            self.assertEqual(marker["samples"], {"train": 3})
+            self.assertEqual(marker["cached_samples"], 3)
+
     def test_exact_signed_rank_uses_seed_level_granularity(self) -> None:
         result = _exact_signed_rank([0.1, 0.2, 0.3, 0.4, 0.5])
         self.assertEqual(result["wilcoxon_nonzero_seed_means"], 5)

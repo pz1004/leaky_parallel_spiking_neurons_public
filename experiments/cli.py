@@ -139,7 +139,11 @@ def command_cache(args: argparse.Namespace) -> int:
         "split_hash": manifest["split_hash"],
         "splits": args.split or ["train", "val", "test"],
         "samples": {
-            name: len(manifest["splits"][name])
+            name: (
+                min(len(manifest["splits"][name]), config.smoke_samples)
+                if config.smoke_samples > 0
+                else len(manifest["splits"][name])
+            )
             for name in (args.split or ["train", "val", "test"])
         },
     }
@@ -158,7 +162,7 @@ def command_cache(args: argparse.Namespace) -> int:
         split_seen = 0
         for _frames, labels, _identifiers, _statistics in loader:
             split_seen += int(labels.numel())
-        expected = len(manifest["splits"][split])
+        expected = marker_payload["samples"][split]
         if split_seen != expected:
             raise RuntimeError(f"Cached {split_seen} {split} samples, expected {expected}")
         seen += split_seen
