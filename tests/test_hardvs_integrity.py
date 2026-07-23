@@ -10,6 +10,44 @@ from scripts import acquire_hardvs, prepare_hardvs
 
 
 class HardvsIntegrityTests(unittest.TestCase):
+    def test_committed_source_audit_matches_integrity_manifest(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        source_audit = json.loads(
+            (project / "manifests" / "hardvs_source_audit.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        claimed_hash = source_audit.pop("manifest_hash")
+        self.assertEqual(claimed_hash, prepare_hardvs.stable_hash(source_audit))
+        manifest = json.loads(
+            (
+                project / "manifests" / "hardvs_compact_archive.json"
+            ).read_text(encoding="utf-8")
+        )
+        declared = {
+            row["sample_id"]
+            for key in (
+                "known_mirror_corrupt_samples",
+                "known_mirror_missing_assigned_samples",
+            )
+            for row in manifest[key]
+        }
+        published = {
+            row["sample_id"]
+            for row in source_audit["excluded_assigned_samples"]
+        }
+        self.assertEqual(published, declared)
+        self.assertEqual(
+            source_audit["effective_counts"],
+            {
+                key: value
+                for key, value in manifest[
+                    "known_mirror_effective_counts"
+                ].items()
+                if key != "valid_unassigned_archive_npz"
+            },
+        )
+
     def test_acquisition_reconciles_missing_assigned_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
