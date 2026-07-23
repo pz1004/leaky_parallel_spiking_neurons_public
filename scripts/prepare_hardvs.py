@@ -73,6 +73,19 @@ def known_corrupt_sample_ids(manifest: dict[str, Any]) -> set[str]:
     }
 
 
+def known_missing_assigned_sample_ids(manifest: dict[str, Any]) -> set[str]:
+    return {
+        str(row["sample_id"])
+        for row in manifest.get("known_mirror_missing_assigned_samples", [])
+    }
+
+
+def known_excluded_sample_ids(manifest: dict[str, Any]) -> set[str]:
+    return known_corrupt_sample_ids(manifest) | known_missing_assigned_sample_ids(
+        manifest
+    )
+
+
 def read_label_rows(path: Path) -> list[tuple[str, int]]:
     rows: list[tuple[str, int]] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -105,6 +118,13 @@ def validate_acquisition_record(
     expected_uncompressed_bytes: int,
     expected_integrity_mode: str,
     expected_manifest_sha256: str,
+    expected_missing_assigned: set[str],
+    expected_corrupt_assigned: set[str],
+    expected_excluded_assigned: set[str],
+    expected_assigned_label_rows: int,
+    expected_archive_sample_ids: int,
+    expected_effective_counts: dict[str, int],
+    expected_valid_unassigned_count: int,
 ) -> dict[str, Any]:
     if not record_path.is_file():
         raise RuntimeError(
@@ -115,6 +135,8 @@ def validate_acquisition_record(
     record_hash = record.pop("record_hash", None)
     if record_hash != stable_hash(record):
         raise RuntimeError(f"Acquisition-record hash mismatch: {record_path}")
+    if int(record.get("schema_version", -1)) < 3:
+        raise RuntimeError("Acquisition record predates label/archive reconciliation")
     if record.get("archive_md5") != archive_md5:
         raise RuntimeError("Acquisition record and current archive MD5 differ")
     if record.get("archive_sha256") != archive_sha256:
@@ -148,6 +170,37 @@ def validate_acquisition_record(
         raise RuntimeError(
             "Acquisition-record uncompressed-byte count differs from the manifest"
         )
+    reconciliation = record.get("label_reconciliation", {})
+    actual_missing = set(reconciliation.get("missing_assigned_sample_ids", []))
+    actual_corrupt = set(reconciliation.get("corrupt_assigned_sample_ids", []))
+    actual_excluded = set(reconciliation.get("excluded_assigned_sample_ids", []))
+    if actual_missing != expected_missing_assigned:
+        raise RuntimeError("Acquisition-record missing-assigned set differs")
+    if actual_corrupt != expected_corrupt_assigned:
+        raise RuntimeError("Acquisition-record corrupt-assigned set differs")
+    if actual_excluded != expected_excluded_assigned:
+        raise RuntimeError("Acquisition-record excluded-assigned set differs")
+    if (
+        int(reconciliation.get("assigned_label_rows", -1))
+        != expected_assigned_label_rows
+    ):
+        raise RuntimeError("Acquisition-record assigned-label count differs")
+    if (
+        int(reconciliation.get("archive_sample_ids", -1))
+        != expected_archive_sample_ids
+    ):
+        raise RuntimeError("Acquisition-record archive-sample count differs")
+    actual_effective_counts = {
+        str(key): int(value)
+        for key, value in reconciliation.get("effective_counts", {}).items()
+    }
+    if actual_effective_counts != expected_effective_counts:
+        raise RuntimeError("Acquisition-record effective split counts differ")
+    if (
+        int(reconciliation.get("valid_unassigned_archive_count", -1))
+        != expected_valid_unassigned_count
+    ):
+        raise RuntimeError("Acquisition-record valid-unassigned count differs")
     return {**record, "record_hash": record_hash}
 
 
@@ -169,16 +222,42 @@ def validate_archive(
     if archive_md5 == official_md5:
         integrity_mode = "official_exact"
         expected_bad = set()
+        expected_missing_assigned: set[str] = set()
+        expected_corrupt_assigned: set[str] = set()
+        expected_excluded_assigned: set[str] = set()
+        expected_effective_counts = {
+            str(row["name"]).removesuffix("_label.txt"): int(row["samples"])
+            for row in manifest["labels"]
+        }
+        expected_effective_counts["assigned"] = sum(
+            expected_effective_counts.values()
+        )
+        expected_valid_unassigned_count = int(
+            manifest["official_unassigned_archive_npz"]
+        )
     elif archive_md5 == mirror_md5:
         if not allow_known_corrupt_mirror:
             raise RuntimeError(
                 "The available archive is the known-corrupt mirror, not the "
                 "official HARDVS object. Use an exact official archive or pass "
-                "--allow-known-corrupt-mirror to apply the recorded six-sample "
+                "--allow-known-corrupt-mirror to apply the recorded 13-sample "
                 "exclusion protocol."
             )
-        integrity_mode = "known_corrupt_mirror_exclusion"
+        integrity_mode = "known_mirror_exclusion"
         expected_bad = known_corrupt_members(manifest)
+        expected_missing_assigned = known_missing_assigned_sample_ids(manifest)
+        expected_corrupt_assigned = known_corrupt_sample_ids(manifest)
+        expected_excluded_assigned = known_excluded_sample_ids(manifest)
+        expected_effective_counts = {
+            str(key): int(value)
+            for key, value in manifest["known_mirror_effective_counts"].items()
+            if key != "valid_unassigned_archive_npz"
+        }
+        expected_valid_unassigned_count = int(
+            manifest["known_mirror_effective_counts"][
+                "valid_unassigned_archive_npz"
+            ]
+        )
         expected_sha256 = str(manifest["known_mirror_archive_sha256"])
         if archive_hashes["sha256"] != expected_sha256:
             raise RuntimeError("Current archive SHA-256 is not the pinned mirror SHA-256")
@@ -197,6 +276,13 @@ def validate_archive(
         expected_uncompressed_bytes=int(manifest["uncompressed_bytes"]),
         expected_integrity_mode=integrity_mode,
         expected_manifest_sha256=manifest_sha256,
+        expected_missing_assigned=expected_missing_assigned,
+        expected_corrupt_assigned=expected_corrupt_assigned,
+        expected_excluded_assigned=expected_excluded_assigned,
+        expected_assigned_label_rows=int(manifest["official_assigned_samples"]),
+        expected_archive_sample_ids=int(manifest["npz_entries"]),
+        expected_effective_counts=expected_effective_counts,
+        expected_valid_unassigned_count=expected_valid_unassigned_count,
     )
     with zipfile.ZipFile(archive) as handle:
         infos = handle.infolist()
@@ -222,9 +308,7 @@ def validate_archive(
         "archive_md5": archive_md5,
         "archive_sha256": archive_hashes["sha256"],
         "excluded_members": sorted(expected_bad),
-        "excluded_sample_ids": sorted(
-            known_corrupt_sample_ids(manifest) if expected_bad else set()
-        ),
+        "excluded_sample_ids": sorted(expected_excluded_assigned),
         "infos": infos,
         "acquisition_record": acquisition_record,
     }
@@ -336,7 +420,7 @@ def extract(
         unzip_returncode = int(result.returncode)
         if integrity_mode == "official_exact" and unzip_returncode != 0:
             raise RuntimeError(f"Exact official archive extraction failed: exit {unzip_returncode}")
-        if integrity_mode == "known_corrupt_mirror_exclusion" and unzip_returncode == 0:
+        if integrity_mode == "known_mirror_exclusion" and unzip_returncode == 0:
             raise RuntimeError("Known-corrupt mirror unexpectedly extracted with no errors")
         quarantine_excluded_members(destination, quarantine, excluded_members)
         extraction_audit = validate_extracted_members(
@@ -406,10 +490,13 @@ def materialize_splits(
         raise RuntimeError(
             f"Excluded sample IDs are absent from official labels: {sorted(unknown_exclusions)}"
         )
-    declared_exclusions = known_corrupt_sample_ids(manifest)
-    declared_rows = manifest.get("known_mirror_corrupt_samples", [])
+    declared_exclusions = known_excluded_sample_ids(manifest)
+    declared_rows = [
+        *manifest.get("known_mirror_corrupt_samples", []),
+        *manifest.get("known_mirror_missing_assigned_samples", []),
+    ]
     if len(declared_rows) != len(declared_exclusions):
-        raise RuntimeError("Duplicate known-corrupt sample IDs in the manifest")
+        raise RuntimeError("Duplicate known-mirror exclusion IDs in the manifest")
     for row in declared_rows:
         sample_id = str(row["sample_id"])
         if sample_split.get(sample_id) != row.get("split"):
@@ -477,7 +564,13 @@ def materialize_splits(
     official_counts = {split: len(rows) for split, rows in split_rows.items()}
     official_assigned = len(all_ids)
     effective_assigned = sum(effective_counts.values())
-    valid_archive_npz = int(manifest["npz_entries"]) - len(excluded_sample_ids)
+    corrupt_exclusions = (
+        known_corrupt_sample_ids(manifest) & excluded_sample_ids
+    )
+    missing_assigned_exclusions = (
+        known_missing_assigned_sample_ids(manifest) & excluded_sample_ids
+    )
+    valid_archive_npz = int(manifest["npz_entries"]) - len(corrupt_exclusions)
     valid_unassigned = valid_archive_npz - effective_assigned
     if excluded_sample_ids:
         expected_effective = manifest["known_mirror_effective_counts"]
@@ -502,6 +595,8 @@ def materialize_splits(
             "assigned": effective_assigned,
         },
         "excluded_sample_ids": sorted(excluded_sample_ids),
+        "corrupt_excluded_sample_ids": sorted(corrupt_exclusions),
+        "missing_assigned_sample_ids": sorted(missing_assigned_exclusions),
         "exclusions_by_split": exclusions_by_split,
         "archive_npz": int(manifest["npz_entries"]),
         "valid_archive_npz": valid_archive_npz,
@@ -530,9 +625,9 @@ def main() -> None:
         "--allow-known-corrupt-mirror",
         action="store_true",
         help=(
-            "Explicitly accept only the pinned known-corrupt mirror after a "
-            "complete acquisition CRC audit, quarantine its six corrupt "
-            "members, and exclude those six official split rows."
+            "Explicitly accept only the pinned known-deviant mirror after a "
+            "complete CRC and label/archive audit, quarantine its six corrupt "
+            "members, and exclude all 13 unavailable assigned rows."
         ),
     )
     args = parser.parse_args()
@@ -583,8 +678,9 @@ def main() -> None:
             if archive_validation["integrity_mode"] == "official_exact"
             else (
                 "The pinned mirror is not byte-identical to the official archive. "
-                "Six corrupt assigned samples were quarantined/excluded exactly "
-                "as declared in the integrity manifest."
+                "Six corrupt assigned members and seven assigned rows absent "
+                "from the archive were excluded exactly as declared in the "
+                "integrity manifest."
             )
         ),
         "preparation_runtime": {
@@ -603,6 +699,14 @@ def main() -> None:
             "sha256": archive_validation["archive_sha256"],
             "complete_crc_member_count": int(manifest["npz_entries"]),
             "complete_crc_failure_count": len(archive_validation["excluded_members"]),
+            "missing_assigned_count": len(
+                archive_validation["acquisition_record"][
+                    "label_reconciliation"
+                ]["missing_assigned_sample_ids"]
+            ),
+            "excluded_assigned_count": len(
+                archive_validation["excluded_sample_ids"]
+            ),
             "acquisition_record_hash": archive_validation["acquisition_record"]["record_hash"],
         },
         "extraction": extraction_record,

@@ -246,7 +246,7 @@ def validate_split_manifest(manifest: dict[str, Any]) -> None:
             raise ValueError("HARDVS split manifests require dataset_integrity")
         if integrity.get("integrity_mode") not in {
             "official_exact",
-            "known_corrupt_mirror_exclusion",
+            "known_mirror_exclusion",
         }:
             raise ValueError("Unknown HARDVS integrity mode")
         counts = {
@@ -257,10 +257,10 @@ def validate_split_manifest(manifest: dict[str, Any]) -> None:
         if observed != integrity.get("effective_counts"):
             raise ValueError("HARDVS split counts disagree with dataset_integrity")
         if (
-            integrity["integrity_mode"] == "known_corrupt_mirror_exclusion"
-            and len(integrity.get("excluded_sample_ids", [])) != 6
+            integrity["integrity_mode"] == "known_mirror_exclusion"
+            and len(integrity.get("excluded_sample_ids", [])) != 13
         ):
-            raise ValueError("Known-mirror HARDVS mode must record six exclusions")
+            raise ValueError("Known-mirror HARDVS mode must record 13 exclusions")
         if bool(integrity.get("preparation_git_dirty")):
             raise ValueError("HARDVS was prepared from a dirty tracked source tree")
 

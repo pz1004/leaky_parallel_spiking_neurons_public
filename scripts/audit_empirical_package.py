@@ -200,7 +200,7 @@ def main() -> int:
             )
             if (
                 integrity.get("integrity_mode")
-                == "known_corrupt_mirror_exclusion"
+                == "known_mirror_exclusion"
                 and not integrity.get("source_deviation")
             ):
                 errors.append(

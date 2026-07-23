@@ -3,10 +3,12 @@
 
 The official project links a single 244.899 GB Baidu object. A pinned public
 mirror stores a same-size object as 23 ordered binary chunks, but that combined
-object is not byte-identical to the official archive and contains six corrupt
-NPZ members. Exact official bytes are required by default. The known mirror can
-be used only with an explicit opt-in that verifies its combined MD5/SHA-256 and
-reproduces the complete six-member CRC failure inventory.
+object is not byte-identical to the official archive, contains six corrupt
+assigned NPZ members, and omits seven additional assigned label rows. Exact
+official bytes are required by default. The known mirror can be used only with
+an explicit opt-in that verifies its combined MD5/SHA-256, reproduces the
+complete six-member CRC failure inventory, and reconciles every label row with
+the archive central directory.
 
 The download is resumable: partial HTTP downloads and a boundary-aligned
 combined archive are reused.
@@ -25,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 BUFFER_SIZE = 8 * 1024 * 1024
@@ -191,10 +193,41 @@ def download_labels(
     return verified
 
 
+def read_assigned_labels(labels_dir: Path) -> dict[str, str]:
+    assigned: dict[str, str] = {}
+    for split in ("train", "val", "test"):
+        path = labels_dir / f"{split}_label.txt"
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            fields = line.split()
+            if len(fields) != 3:
+                raise RuntimeError(
+                    f"{path}:{number}: expected three label fields"
+                )
+            sample_id = fields[0]
+            if sample_id in assigned:
+                raise RuntimeError(f"Duplicate assigned sample ID: {sample_id}")
+            assigned[sample_id] = split
+    return assigned
+
+
+def archive_sample_id(member: str) -> str:
+    path = PurePosixPath(member)
+    if (
+        len(path.parts) != 4
+        or path.parts[0] != "MINIHARDVS_EVENT_files"
+        or path.parts[3] != f"{path.parts[2]}.npz"
+    ):
+        raise RuntimeError(f"Unexpected HARDVS NPZ member layout: {member}")
+    return f"{path.parts[1]}/{path.parts[2]}"
+
+
 def verify_zip(
     manifest: dict[str, Any],
     archive: Path,
     *,
+    labels_dir: Path,
     allow_known_corrupt_mirror: bool = False,
 ) -> dict[str, Any]:
     if archive.stat().st_size != int(manifest["archive_size"]):
@@ -208,12 +241,15 @@ def verify_zip(
     if archive_hashes["md5"] == official_md5:
         integrity_mode = "official_exact"
         expected_bad: set[str] = set()
+        expected_missing_assigned: set[str] = set()
+        expected_unassigned_count = int(manifest["official_unassigned_archive_npz"])
     elif archive_hashes["md5"] == mirror_md5:
         if not allow_known_corrupt_mirror:
             raise RuntimeError(
                 "The pinned mirror is not byte-identical to the official HARDVS "
                 f"archive (mirror MD5 {mirror_md5}; official MD5 {official_md5}) "
-                "and contains six corrupt assigned samples. Supply an exact "
+                "and leaves 13 assigned samples unavailable (six corrupt and "
+                "seven absent). Supply an exact "
                 "official archive, or rerun with --allow-known-corrupt-mirror "
                 "to use the explicit exclusion protocol."
             )
@@ -223,10 +259,19 @@ def verify_zip(
                 "Known-mirror SHA-256 mismatch: "
                 f"{archive_hashes['sha256']} != {expected_sha256}"
             )
-        integrity_mode = "known_corrupt_mirror_exclusion"
+        integrity_mode = "known_mirror_exclusion"
         expected_bad = {
             str(row["member"]) for row in manifest["known_mirror_corrupt_samples"]
         }
+        expected_missing_assigned = {
+            str(row["sample_id"])
+            for row in manifest["known_mirror_missing_assigned_samples"]
+        }
+        expected_unassigned_count = int(
+            manifest["known_mirror_effective_counts"][
+                "valid_unassigned_archive_npz"
+            ]
+        )
     else:
         raise RuntimeError(
             "Archive MD5 matches neither the exact official object nor the "
@@ -279,9 +324,59 @@ def verify_zip(
             "Full ZIP CRC inventory mismatch: "
             f"missing expected failures={missing}; unexpected failures={unexpected}"
         )
+    assigned = read_assigned_labels(labels_dir)
+    if len(assigned) != int(manifest["official_assigned_samples"]):
+        raise RuntimeError(f"Assigned-label count mismatch: {len(assigned)}")
+    archive_ids: dict[str, str] = {}
+    for info in npz_infos:
+        sample_id = archive_sample_id(info.filename)
+        if sample_id in archive_ids:
+            raise RuntimeError(f"Duplicate archive sample ID: {sample_id}")
+        archive_ids[sample_id] = info.filename
+    missing_assigned = set(assigned) - set(archive_ids)
+    unassigned_archive = set(archive_ids) - set(assigned)
+    if missing_assigned != expected_missing_assigned:
+        raise RuntimeError(
+            "Assigned-label/archive reconciliation mismatch: "
+            f"missing expected={sorted(expected_missing_assigned - missing_assigned)}; "
+            f"unexpected missing={sorted(missing_assigned - expected_missing_assigned)}"
+        )
+    bad_sample_ids = {archive_sample_id(member) for member in actual_bad}
+    if not bad_sample_ids <= set(assigned):
+        raise RuntimeError(
+            f"Corrupt archive members are not assigned rows: {sorted(bad_sample_ids - set(assigned))}"
+        )
+    valid_unassigned = unassigned_archive - bad_sample_ids
+    if len(valid_unassigned) != expected_unassigned_count:
+        raise RuntimeError(
+            "Valid unassigned archive count mismatch: "
+            f"{len(valid_unassigned)} != {expected_unassigned_count}"
+        )
+    excluded_sample_ids = missing_assigned | bad_sample_ids
+    effective_counts = {
+        split: sum(
+            assigned[sample_id] == split and sample_id not in excluded_sample_ids
+            for sample_id in assigned
+        )
+        for split in ("train", "val", "test")
+    }
+    effective_counts["assigned"] = sum(effective_counts.values())
+    if integrity_mode == "known_mirror_exclusion":
+        expected_effective = {
+            key: int(value)
+            for key, value in manifest["known_mirror_effective_counts"].items()
+            if key != "valid_unassigned_archive_npz"
+        }
+        if effective_counts != expected_effective:
+            raise RuntimeError(
+                f"Effective assigned counts mismatch: {effective_counts} != {expected_effective}"
+            )
+    elif effective_counts["assigned"] != int(manifest["official_assigned_samples"]):
+        raise RuntimeError("Exact official archive does not preserve all assigned rows")
     print(
         f"[zip verified] mode={integrity_mode} entries={len(infos)} "
-        f"npz={npz_count} bad={len(bad)} uncompressed={uncompressed}",
+        f"npz={npz_count} bad={len(bad)} missing_assigned={len(missing_assigned)} "
+        f"unassigned={len(valid_unassigned)} uncompressed={uncompressed}",
         flush=True,
     )
     return {
@@ -295,6 +390,16 @@ def verify_zip(
         "full_crc_members": len(npz_infos),
         "full_crc_failures": bad,
         "full_crc_seconds": time.time() - started,
+        "label_reconciliation": {
+            "assigned_label_rows": len(assigned),
+            "archive_sample_ids": len(archive_ids),
+            "missing_assigned_sample_ids": sorted(missing_assigned),
+            "corrupt_assigned_sample_ids": sorted(bad_sample_ids),
+            "excluded_assigned_sample_ids": sorted(excluded_sample_ids),
+            "effective_counts": effective_counts,
+            "valid_unassigned_archive_count": len(valid_unassigned),
+            "valid_unassigned_archive_sample_ids": sorted(valid_unassigned),
+        },
     }
 
 
@@ -311,8 +416,9 @@ def main() -> None:
         action="store_true",
         help=(
             "Explicitly accept the pinned non-official mirror only after its "
-            "combined hashes and complete six-member CRC failure set match "
-            "the manifest. The preparation step will exclude those samples."
+            "combined hashes, complete six-member CRC failure set, and full "
+            "label/archive reconciliation match the manifest. Preparation "
+            "will exclude all 13 unavailable assigned samples."
         ),
     )
     args = parser.parse_args()
@@ -357,10 +463,11 @@ def main() -> None:
     verification = verify_zip(
         manifest,
         archive,
+        labels_dir=labels_dir,
         allow_known_corrupt_mirror=args.allow_known_corrupt_mirror,
     )
     record = {
-        "schema_version": 2,
+        "schema_version": 3,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "manifest": str(args.manifest.resolve()),
         "manifest_sha256": digest(args.manifest.resolve()),

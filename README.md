@@ -60,9 +60,11 @@ python scripts/prepare_hardvs.py --download ../data/HARDVS/download \
 The pinned chunked mirror is the same size but is not byte-identical to the
 official object: its combined MD5 is `ef1099ca11f647958870ada2ef29e2d9`, and a
 complete read of all 107,710 NPZ members finds six corrupt assigned samples
-(three train and three test). It is therefore rejected by default. If the
-official provider is inaccessible, the only supported fallback is an explicit
-six-sample exclusion protocol:
+(three train and three test). Full label-to-central-directory reconciliation
+also finds seven consecutive assigned `action_006` train rows with no archive
+member. The mirror is therefore rejected by default. If the official provider
+is inaccessible, the only supported fallback is an explicit 13-sample
+exclusion protocol:
 
 ```bash
 python scripts/acquire_hardvs.py --output ../data/HARDVS/download --workers 8 \
@@ -72,9 +74,10 @@ python scripts/prepare_hardvs.py --download ../data/HARDVS/download \
 ```
 
 That opt-in verifies every downloaded chunk, the combined archive MD5 and
-SHA-256, all label digests, and the complete six-member failure inventory. It
-then quarantines/excludes exactly the declared failures. Effective counts are
-64,523 train, 10,734 validation, and 32,383 test (107,640 assigned samples);
+SHA-256, all label digests, the complete six-member CRC failure inventory, and all
+107,646 assigned label identifiers. It then quarantines the six unreadable
+members and excludes those plus the seven absent rows. Effective counts are
+64,516 train, 10,734 validation, and 32,383 test (107,633 assigned samples);
 the generated integrity record labels this as a source deviation. It must not
 be reported as an exact replication of the official 107,646-row split.
 

@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "description": "Integrity manifest for the 244,899,036,166-byte HARDVS compact-event ZIP linked by the official project. The pinned mirror preserves a same-size object as 23 ordered chunks, but its combined MD5 differs from the official archive and a full CRC pass finds six corrupt NPZ members. Exact official data are required by default; the known mirror is accepted only through an explicit, recorded six-sample exclusion mode.",
+  "schema_version": 3,
+  "description": "Integrity manifest for the 244,899,036,166-byte HARDVS compact-event ZIP linked by the official project. The pinned mirror preserves a same-size object as 23 ordered chunks, but its combined MD5 differs from the official archive, a full CRC pass finds six corrupt assigned NPZ members, and seven additional assigned label rows are absent from its central directory. Exact official data are required by default; the known mirror is accepted only through an explicit, recorded 13-sample exclusion mode.",
   "official_project": "https://github.com/Event-AHU/HARDVS",
   "official_baidu_share": "https://pan.baidu.com/s/1iw214Aj5ugN-arhuxjmfOw?pwd=1234",
   "mirror_repository": "pan7386/HARDVS",
@@ -10,10 +10,12 @@
   "archive_entries": 215721,
   "npz_entries": 107710,
   "uncompressed_bytes": 256909046844,
+  "official_assigned_samples": 107646,
+  "official_unassigned_archive_npz": 64,
   "official_archive_md5": "9c4cc0d9ba043faa17f6f1a9e9aff982",
   "known_mirror_archive_md5": "ef1099ca11f647958870ada2ef29e2d9",
   "known_mirror_archive_sha256": "b0e89f3bf8b24e42a3df8bd39c09fcb303fb6365eeee11eec3071ae93cb61b48",
-  "known_mirror_status": "corrupt_opt_in_exclusion_only",
+  "known_mirror_status": "deviant_opt_in_exclusion_only",
   "known_mirror_corrupt_samples": [
     {
       "sample_id": "action_090/dvSave-2021_10_11_19_06_27",
@@ -52,12 +54,49 @@
       "failure": "Deflate stream error"
     }
   ],
+  "known_mirror_missing_assigned_samples": [
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_44_40",
+      "split": "train",
+      "failure": "Assigned label row absent from archive central directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_45_19",
+      "split": "train",
+      "failure": "Assigned label row absent from archive central directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_45_34",
+      "split": "train",
+      "failure": "Assigned label row absent from archive central directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_45_54",
+      "split": "train",
+      "failure": "Assigned label row absent from archive central directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_46_07",
+      "split": "train",
+      "failure": "Assigned label row absent from archive central directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_46_20",
+      "split": "train",
+      "failure": "Assigned label row absent from archive central directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_46_36",
+      "split": "train",
+      "failure": "Assigned label row absent from archive central directory"
+    }
+  ],
   "known_mirror_effective_counts": {
-    "train": 64523,
+    "train": 64516,
     "val": 10734,
     "test": 32383,
-    "assigned": 107640,
-    "valid_unassigned_archive_npz": 64
+    "assigned": 107633,
+    "valid_unassigned_archive_npz": 71
   },
   "parts": [
     {"index": 0, "name": "MINIHARDVS_EVENT_files_part0.zip", "size": 10737418240, "sha256": "158b23c40b5c55f7dd57cf6e01aaf8e968da1a7229c85c8c4ba8bde1b5e5aaa6"},
