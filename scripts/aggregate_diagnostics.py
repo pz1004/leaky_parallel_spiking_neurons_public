@@ -136,6 +136,33 @@ def main() -> int:
                     "sha256": file_sha256(benchmark_path),
                 }
             )
+        influence_path = run_dir(config) / "temporal_influence.json"
+        if influence_path.is_file():
+            payload = read_hashed(influence_path)
+            values = payload["normalized_absolute_input_gradient"]
+            if len(values) != config.time_steps:
+                raise RuntimeError(
+                    f"Influence length mismatch in {influence_path}: {len(values)}"
+                )
+            for timestep, value in enumerate(values):
+                influence_timesteps.append(
+                    {**common, "timestep": timestep, "normalized_influence": value}
+                )
+            influence_horizons.append(
+                {
+                    **common,
+                    "effective_horizon_90_percent": payload[
+                        "effective_horizon_90_percent"
+                    ],
+                    "samples": payload["samples"],
+                }
+            )
+            sources.append(
+                {
+                    "path": str(influence_path.relative_to(PROJECT)),
+                    "sha256": file_sha256(influence_path),
+                }
+            )
 
     for dataset, split_path in sorted(split_paths.items()):
         manifest = load_split_manifest(split_path)
@@ -175,33 +202,6 @@ def main() -> int:
                 "sha256": file_sha256(split_path),
             }
         )
-        influence_path = run_dir(config) / "temporal_influence.json"
-        if influence_path.is_file():
-            payload = read_hashed(influence_path)
-            values = payload["normalized_absolute_input_gradient"]
-            if len(values) != config.time_steps:
-                raise RuntimeError(
-                    f"Influence length mismatch in {influence_path}: {len(values)}"
-                )
-            for timestep, value in enumerate(values):
-                influence_timesteps.append(
-                    {**common, "timestep": timestep, "normalized_influence": value}
-                )
-            influence_horizons.append(
-                {
-                    **common,
-                    "effective_horizon_90_percent": payload[
-                        "effective_horizon_90_percent"
-                    ],
-                    "samples": payload["samples"],
-                }
-            )
-            sources.append(
-                {
-                    "path": str(influence_path.relative_to(PROJECT)),
-                    "sha256": file_sha256(influence_path),
-                }
-            )
 
     benchmark_summary = summarize(
         benchmarks,
