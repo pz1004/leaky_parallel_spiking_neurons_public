@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -34,6 +35,29 @@ def file_digests(path: Path, algorithms: tuple[str, ...]) -> dict[str, str]:
 def stable_hash(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def git_state(project: Path) -> dict[str, Any]:
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return {
+        "git_commit": (
+            commit.stdout.strip() if commit.returncode == 0 else "unknown"
+        ),
+        "git_dirty": status.returncode != 0 or bool(status.stdout.strip()),
+    }
 
 
 def known_corrupt_members(manifest: dict[str, Any]) -> set[str]:
@@ -498,6 +522,11 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--keep-archive", action="store_true")
     parser.add_argument(
+        "--allow-dirty-code",
+        action="store_true",
+        help="Record but explicitly allow a dirty tracked source tree.",
+    )
+    parser.add_argument(
         "--allow-known-corrupt-mirror",
         action="store_true",
         help=(
@@ -508,6 +537,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    project = Path(__file__).resolve().parents[1]
+    preparation_git = git_state(project)
+    if preparation_git["git_dirty"] and not args.allow_dirty_code:
+        raise RuntimeError(
+            "Refusing dataset preparation from a dirty tracked source tree; "
+            "commit the preparation code or pass --allow-dirty-code explicitly."
+        )
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     download = args.download.resolve()
     hardvs_root = args.data_root.resolve() / "HARDVS"
@@ -551,6 +587,15 @@ def main() -> None:
                 "as declared in the integrity manifest."
             )
         ),
+        "preparation_runtime": {
+            **preparation_git,
+            "python": sys.version,
+            "script": str(Path(__file__).resolve()),
+            "script_sha256": file_digest(Path(__file__).resolve(), "sha256"),
+            "manifest": str(args.manifest.resolve()),
+            "manifest_sha256": file_digest(args.manifest.resolve(), "sha256"),
+            "argv": sys.argv,
+        },
         "archive": {
             "name": archive.name,
             "size": archive.stat().st_size,

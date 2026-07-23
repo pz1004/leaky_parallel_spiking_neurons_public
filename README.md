@@ -84,7 +84,9 @@ its client is available. Acquisition performs a complete CRC read and writes a
 hash-protected record; preparation refuses to proceed without that matching
 record, validates the label digests and split disjointness, creates only
 symlinks in `HARDVS/raw/{train,val,test}`, and removes the source archive after
-successful extraction unless `--keep-archive` is given.
+successful extraction unless `--keep-archive` is given. It refuses a dirty
+tracked source tree by default and records the preparation commit plus script
+and manifest hashes in the dataset integrity record.
 
 CIFAR10-DVS keeps the TEBN test assignment and takes a deterministic
 class-stratified validation subset from training. DVS-Gesture keeps the
