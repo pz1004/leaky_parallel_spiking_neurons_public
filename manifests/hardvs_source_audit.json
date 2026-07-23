@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "manifest_hash": "ff8d2added918cae76451b0ce0a9bcb04948fb68b291d0ac4faf14e10958654c",
+  "completed_at": "2026-07-23T12:06:43Z",
+  "integrity_mode": "known_mirror_exclusion",
+  "source_deviation": "The pinned mirror is not byte-identical to the official archive. Six corrupt assigned members and seven assigned rows absent from the archive were excluded exactly as declared in the integrity manifest.",
+  "source": {
+    "official_project": "https://github.com/Event-AHU/HARDVS",
+    "mirror_repository": "pan7386/HARDVS",
+    "mirror_revision": "dacc5cd5e49b1188f964dbe2a8ece36a69ce38c8",
+    "archive_size": 244899036166,
+    "official_archive_md5": "9c4cc0d9ba043faa17f6f1a9e9aff982",
+    "mirror_archive_md5": "ef1099ca11f647958870ada2ef29e2d9",
+    "mirror_archive_sha256": "b0e89f3bf8b24e42a3df8bd39c09fcb303fb6365eeee11eec3071ae93cb61b48",
+    "all_23_chunk_sha256_digests_verified": true
+  },
+  "verification": {
+    "archive_entries": 215721,
+    "npz_members_read_to_eof": 107710,
+    "crc_failures": 6,
+    "unexpected_crc_failures": 0,
+    "assigned_label_rows_reconciled": 107646,
+    "archive_sample_ids_reconciled": 107710,
+    "missing_assigned_rows": 7,
+    "valid_unassigned_archive_npz": 71,
+    "extracted_npz_crc_verified": 107704,
+    "extracted_npz_crc_mismatches": 0
+  },
+  "official_counts": {
+    "train": 64526,
+    "val": 10734,
+    "test": 32386,
+    "assigned": 107646
+  },
+  "effective_counts": {
+    "train": 64516,
+    "val": 10734,
+    "test": 32383,
+    "assigned": 107633
+  },
+  "excluded_assigned_samples": [
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_44_40",
+      "split": "train",
+      "reason": "absent_from_archive_central_directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_45_19",
+      "split": "train",
+      "reason": "absent_from_archive_central_directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_45_34",
+      "split": "train",
+      "reason": "absent_from_archive_central_directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_45_54",
+      "split": "train",
+      "reason": "absent_from_archive_central_directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_46_07",
+      "split": "train",
+      "reason": "absent_from_archive_central_directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_46_20",
+      "split": "train",
+      "reason": "absent_from_archive_central_directory"
+    },
+    {
+      "sample_id": "action_006/dvSave-2021_07_30_10_46_36",
+      "split": "train",
+      "reason": "absent_from_archive_central_directory"
+    },
+    {
+      "sample_id": "action_090/dvSave-2021_10_11_19_06_27",
+      "split": "test",
+      "reason": "archive_crc_failure"
+    },
+    {
+      "sample_id": "action_090/dvSave-2021_10_11_19_06_36",
+      "split": "test",
+      "reason": "archive_local_header_failure"
+    },
+    {
+      "sample_id": "action_092/dvSave-2021_09_08_03_53_35",
+      "split": "train",
+      "reason": "archive_deflate_failure"
+    },
+    {
+      "sample_id": "action_092/dvSave-2021_09_08_03_53_47",
+      "split": "train",
+      "reason": "archive_local_header_failure"
+    },
+    {
+      "sample_id": "action_092/dvSave-2021_09_08_03_53_57",
+      "split": "train",
+      "reason": "archive_local_header_failure"
+    },
+    {
+      "sample_id": "action_128/dvSave-2021_09_01_09_06_43",
+      "split": "test",
+      "reason": "archive_deflate_failure"
+    }
+  ],
+  "provenance": {
+    "acquisition_record_hash": "c53feb15834fe3b30001f946669aad38de41ab62105149111fbb0c2c9841c945",
+    "integrity_record_hash": "f2a34e72b9dd375fdcb38382379c025bb297c9a1676da377bbffdd7991f50af0",
+    "preparation_git_commit": "4fbb96affd4afbea5c8b8133089750f44c0ac231",
+    "preparation_git_dirty": false,
+    "preparation_script_sha256": "ce0194d33e3673be4249dff6de50bef48d59d6383854972b02a201894be5c3bb"
+  }
+}

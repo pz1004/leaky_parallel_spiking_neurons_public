@@ -80,6 +80,9 @@ members and excludes those plus the seven absent rows. Effective counts are
 64,516 train, 10,734 validation, and 32,383 test (107,633 assigned samples);
 the generated integrity record labels this as a source deviation. It must not
 be reported as an exact replication of the official 107,646-row split.
+The committed `manifests/hardvs_source_audit.json` records the completed
+archive/member/label reconciliation, all 13 exclusions, extracted-payload CRC
+coverage, and the hashes of the local acquisition and preparation records.
 
 The downloader does not redistribute data from this repository. Users remain
 responsible for the dataset terms and should prefer the original provider when
