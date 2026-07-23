@@ -109,6 +109,27 @@ class ProtocolTests(unittest.TestCase):
                 path = root / f"run_{index}" / "locked_test_metrics.jsonl"
                 path.parent.mkdir()
                 path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+                training = {
+                    "experiment_id": "shared_training",
+                    "dataset": row["dataset"],
+                    "model": row["model"],
+                    "seed": row["seed"],
+                    "time_steps": row["time_steps"],
+                    "condition": {
+                        "name": row["condition"],
+                        "severity": row["severity"],
+                        "draw": row["draw"],
+                    },
+                    "parameter_count": 10,
+                    "trainable_parameter_count": 10,
+                    "best_validation_value": row["accuracy"],
+                    "best_validation_accuracy": row["accuracy"],
+                    "best_epoch": 1,
+                    "executed_epochs": 2,
+                }
+                (path.parent / "train_result.json").write_text(
+                    json.dumps(training) + "\n", encoding="utf-8"
+                )
             output = root / "aggregates" / "results.csv"
             command_analyze(Namespace(runs_root=root, output=output))
             with output.open(encoding="utf-8", newline="") as handle:
@@ -124,6 +145,15 @@ class ProtocolTests(unittest.TestCase):
                 density["clean_reference_experiment_id"], "temporal_native"
             )
             self.assertAlmostEqual(float(density["absolute_accuracy_drop"]), 0.2)
+            with output.with_name("results_training.csv").open(
+                encoding="utf-8", newline=""
+            ) as handle:
+                training_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(training_rows), 2)
+            self.assertEqual(
+                {row["condition"] for row in training_rows},
+                {"clean", "event_thin"},
+            )
 
 
 if __name__ == "__main__":

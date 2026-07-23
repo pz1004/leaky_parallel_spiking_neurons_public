@@ -939,14 +939,25 @@ def command_analyze(args: argparse.Namespace) -> int:
         relative = path.relative_to(args.runs_root)
         if not relative.parts:
             continue
+        condition = row.get("condition", {})
         training_rows.append(
             {
                 **row,
                 "experiment_id": row.get("experiment_id", relative.parts[0]),
+                "condition": str(condition.get("name", "clean")),
+                "severity": float(condition.get("severity", 0.0)),
+                "draw": int(condition.get("draw", 0)),
             }
         )
     training_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-    training_keys = ("experiment_id", "dataset", "model", "time_steps")
+    training_keys = (
+        "experiment_id",
+        "dataset",
+        "model",
+        "time_steps",
+        "condition",
+        "severity",
+    )
     for row in training_rows:
         training_groups.setdefault(
             tuple(row[key] for key in training_keys), []
@@ -956,6 +967,7 @@ def command_analyze(args: argparse.Namespace) -> int:
         result = {
             **dict(zip(training_keys, key)),
             "n_seeds": len({int(row["seed"]) for row in selected}),
+            "n_draws": len({int(row["draw"]) for row in selected}),
             "parameter_count": int(selected[0]["parameter_count"]),
             "trainable_parameter_count": int(
                 selected[0]["trainable_parameter_count"]
