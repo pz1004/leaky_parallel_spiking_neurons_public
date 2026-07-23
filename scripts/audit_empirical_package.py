@@ -126,6 +126,19 @@ def main() -> int:
     expected_diagnostics = diagnostic_keys(args.grids_manifest, grids)
     errors: list[str] = []
     warnings: list[str] = []
+    hardvs_source_audit: dict[str, Any] | None = None
+    hardvs_source_audit_path = (
+        PROJECT / "manifests" / "hardvs_source_audit.json"
+    )
+    try:
+        hardvs_source_audit, source_audit_valid = hashed_json(
+            hardvs_source_audit_path
+        )
+    except Exception as error:
+        errors.append(f"invalid HARDVS source audit: {error}")
+    else:
+        if not source_audit_valid:
+            errors.append("HARDVS source-audit manifest hash mismatch")
     hardvs_sources: dict[str, dict[str, Any]] = {}
     stats: dict[str, int] = {
         "configs": 0,
@@ -174,6 +187,58 @@ def main() -> int:
         classes = int(DATASET_META[config.dataset]["classes"])
         if config.dataset == "hardvs":
             integrity = split.get("dataset_integrity", {})
+            if hardvs_source_audit is not None:
+                provenance = hardvs_source_audit.get("provenance", {})
+                published_exclusions = {
+                    str(row["sample_id"])
+                    for row in hardvs_source_audit.get(
+                        "excluded_assigned_samples", []
+                    )
+                }
+                observed_exclusions = set(
+                    integrity.get("excluded_sample_ids", [])
+                )
+                expected_pairs = (
+                    (
+                        "acquisition record",
+                        provenance.get("acquisition_record_hash"),
+                        integrity.get("acquisition_record_hash"),
+                    ),
+                    (
+                        "integrity record",
+                        provenance.get("integrity_record_hash"),
+                        integrity.get("record_hash"),
+                    ),
+                    (
+                        "preparation commit",
+                        provenance.get("preparation_git_commit"),
+                        integrity.get("preparation_git_commit"),
+                    ),
+                    (
+                        "preparation script",
+                        provenance.get("preparation_script_sha256"),
+                        integrity.get("preparation_script_sha256"),
+                    ),
+                )
+                for name, published, observed in expected_pairs:
+                    if published != observed:
+                        errors.append(
+                            f"{label}: HARDVS {name} differs from the "
+                            "published source audit"
+                        )
+                if (
+                    hardvs_source_audit.get("effective_counts")
+                    != integrity.get("effective_counts")
+                ):
+                    errors.append(
+                        f"{label}: HARDVS effective counts differ from the "
+                        "published source audit"
+                    )
+                if published_exclusions != observed_exclusions:
+                    errors.append(
+                        f"{label}: HARDVS exclusions differ from the "
+                        "published source audit"
+                    )
             hardvs_sources.setdefault(
                 str(split["split_hash"]),
                 {
