@@ -14,6 +14,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -22,6 +23,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+# NVIDIA documents this workspace setting as a prerequisite for reproducible
+# cuBLAS GEMM on CUDA 10.2 and later. Set it before importing torch so direct
+# CLI use and the matrix scheduler follow the same deterministic contract.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
 import torch
 import yaml
 

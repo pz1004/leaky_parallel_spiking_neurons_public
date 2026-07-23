@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -276,6 +277,10 @@ def environment_summary() -> dict[str, Any]:
         "cudnn": cudnn,
         "cuda_available": torch.cuda.is_available(),
         "devices": devices,
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "cudnn_benchmark": torch.backends.cudnn.benchmark,
+        "cudnn_deterministic": torch.backends.cudnn.deterministic,
         "git_commit": git_commit(),
         "git_dirty": git_dirty(),
     }

@@ -95,6 +95,11 @@ validation macro-F1, with validation accuracy as the prespecified tie-breaker:
 python -m experiments.cli train --config generated_configs/<study>/<dataset>/<model>/T<steps>/seed_<seed>.yml
 ```
 
+The CLI enables strict PyTorch deterministic algorithms, deterministic cuDNN,
+and `CUBLAS_WORKSPACE_CONFIG=:4096:8`; each environment manifest records these
+settings. If an operation has no deterministic CUDA implementation, training
+fails rather than silently continuing with a warning.
+
 The separately invoked evaluation command loads only the selected checkpoint.
 Every `(condition, severity, draw)` is recorded in an append-only ledger and a
 duplicate locked-test evaluation is rejected:

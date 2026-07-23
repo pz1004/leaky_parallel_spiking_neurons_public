@@ -337,6 +337,8 @@ def main() -> int:
 
     environment = os.environ.copy()
     environment["CUDA_VISIBLE_DEVICES"] = "0"
+    environment["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    environment.setdefault("PYTHONHASHSEED", "0")
     environment.setdefault("OMP_NUM_THREADS", "4")
     report: dict[str, Any] = {
         "started_at": now(),
