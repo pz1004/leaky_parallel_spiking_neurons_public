@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import csv
+import json
+from argparse import Namespace
 from pathlib import Path
 
 from dataclasses import replace
 
 from experiments.config import ConditionConfig, ExperimentConfig
 from experiments.data import build_dataset, load_split_manifest, prepare_split_manifest
+from experiments.cli import command_analyze
 
 
 class ProtocolTests(unittest.TestCase):
@@ -59,6 +63,60 @@ class ProtocolTests(unittest.TestCase):
                 replace(config, condition=ConditionConfig("event_dropout", 0.5, draw=9)), "test"
             )
             self.assertEqual(clean[0][3]["duration"], corrupt[0][3]["duration"])
+
+    def test_analysis_uses_declared_temporal_native_clean_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            common = {
+                "dataset": "cifar10_dvs",
+                "model": "psn",
+                "seed": 42,
+                "time_steps": 32,
+                "draw": 0,
+                "firing_rate": 0.1,
+                "throughput": 1.0,
+                "peak_cuda_memory_mb": 1.0,
+                "mean_event_count": 1.0,
+                "mean_active_bin_fraction": 0.1,
+                "mean_event_mass": 1.0,
+                "mean_duration": 1.0,
+                "macro_f1": 0.5,
+            }
+            rows = [
+                {
+                    **common,
+                    "experiment_id": "temporal_native",
+                    "condition": "clean",
+                    "severity": 0.0,
+                    "accuracy": 0.8,
+                },
+                {
+                    **common,
+                    "experiment_id": "density_sparsity",
+                    "condition": "event_thin",
+                    "severity": 0.5,
+                    "accuracy": 0.6,
+                },
+            ]
+            for index, row in enumerate(rows):
+                path = root / f"run_{index}" / "locked_test_metrics.jsonl"
+                path.parent.mkdir()
+                path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            output = root / "aggregates" / "results.csv"
+            command_analyze(Namespace(runs_root=root, output=output))
+            with output.open(encoding="utf-8", newline="") as handle:
+                results = list(csv.DictReader(handle))
+            density = next(
+                row for row in results if row["experiment_id"] == "density_sparsity"
+            )
+            self.assertEqual(
+                density["clean_reference_type"],
+                "temporal_native_matched_fallback",
+            )
+            self.assertEqual(
+                density["clean_reference_experiment_id"], "temporal_native"
+            )
+            self.assertAlmostEqual(float(density["absolute_accuracy_drop"]), 0.2)
 
 
 if __name__ == "__main__":

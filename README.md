@@ -45,31 +45,51 @@ data/
   HARDVS/raw/{train,val,test}/action_<id>/*.npz
 ```
 
-HARDVS is not bundled and must be acquired under its own terms. Its published
-train, validation, and test partitions are preserved. CIFAR10-DVS keeps the
-TEBN test assignment and takes a deterministic class-stratified validation
-subset from training. DVS-Gesture keeps the official test assignment and uses
-a subject-disjoint validation subset from training.
-
-For environments that cannot use the official Baidu client, the integrity
-manifest records a public, chunked third-party mirror of the
-244,899,036,166-byte compact-event archive. The acquisition command resumes
-partial chunks, verifies all 23 mirror SHA-256 digests, verifies the published
-SpikingJelly label-file MD5 digests, and checks the combined ZIP central
-directory:
+HARDVS is not bundled and must be acquired under its own terms. The default
+protocol requires the exact 244,899,036,166-byte official archive (MD5
+`9c4cc0d9ba043faa17f6f1a9e9aff982`) and preserves every published train,
+validation, and test row. Put that archive at
+`../data/HARDVS/download/MINIHARDVS_EVENT_files.zip`, then run:
 
 ```bash
-python scripts/acquire_hardvs.py --output ../data/HARDVS/download --workers 8
+python scripts/acquire_hardvs.py --output ../data/HARDVS/download
 python scripts/prepare_hardvs.py --download ../data/HARDVS/download \
   --data-root ../data
 ```
 
+The pinned chunked mirror is the same size but is not byte-identical to the
+official object: its combined MD5 is `ef1099ca11f647958870ada2ef29e2d9`, and a
+complete read of all 107,710 NPZ members finds six corrupt assigned samples
+(three train and three test). It is therefore rejected by default. If the
+official provider is inaccessible, the only supported fallback is an explicit
+six-sample exclusion protocol:
+
+```bash
+python scripts/acquire_hardvs.py --output ../data/HARDVS/download --workers 8 \
+  --allow-known-corrupt-mirror
+python scripts/prepare_hardvs.py --download ../data/HARDVS/download \
+  --data-root ../data --allow-known-corrupt-mirror
+```
+
+That opt-in verifies every downloaded chunk, the combined archive MD5 and
+SHA-256, all label digests, and the complete six-member failure inventory. It
+then quarantines/excludes exactly the declared failures. Effective counts are
+64,523 train, 10,734 validation, and 32,383 test (107,640 assigned samples);
+the generated integrity record labels this as a source deviation. It must not
+be reported as an exact replication of the official 107,646-row split.
+
 The downloader does not redistribute data from this repository. Users remain
 responsible for the dataset terms and should prefer the original provider when
-its client is available. The preparation command performs ZIP CRC checks,
-validates the published label digests and disjointness, creates only symlinks
-in `HARDVS/raw/{train,val,test}`, and removes the verified source archive after
+its client is available. Acquisition performs a complete CRC read and writes a
+hash-protected record; preparation refuses to proceed without that matching
+record, validates the label digests and split disjointness, creates only
+symlinks in `HARDVS/raw/{train,val,test}`, and removes the source archive after
 successful extraction unless `--keep-archive` is given.
+
+CIFAR10-DVS keeps the TEBN test assignment and takes a deterministic
+class-stratified validation subset from training. DVS-Gesture keeps the
+official test assignment and uses a subject-disjoint validation subset from
+training.
 
 Generate or verify manifests:
 
@@ -108,9 +128,11 @@ duplicate locked-test evaluation is rejected:
 python -m experiments.cli evaluate --config <config.yml>
 ```
 
-Run manifests record the configuration, split and source hashes, environment,
-checkpoint epoch, and selection rule. Per-layer firing activity, macro metrics,
-latency, throughput, and peak allocated CUDA memory are machine-readable.
+The training manifest is never overwritten by evaluation. Each test opening
+has its own hash-bearing manifest with evaluation-time git state, checkpoint
+epoch and SHA-256, selection rule, split hash, and hashes of its per-sample and
+confusion artifacts. Per-layer firing activity, macro metrics, latency,
+throughput, and peak allocated CUDA memory are machine-readable.
 
 ## Full Study Matrix
 
@@ -166,11 +188,27 @@ The committed named grids can be used instead of the generated JSON manifest,
 for example `--manifest configs/evaluation_grids.yml --grid robustness`.
 
 The grid covers event dropout, background activity, polarity flips, timestamp
-jitter, contiguous packet loss, and hot-pixel bursts at three severities. The
-same sample/condition/draw seed is used for every model. These are explicitly
-sensor-motivated synthetic corruptions, not a calibrated physical-sensor model.
+jitter, contiguous packet loss, and hot-pixel bursts at three severities. A
+perturbation is determined by sample, condition, severity, and declared draw,
+so the identical realization is shared across every model and initialization
+seed. These are explicitly sensor-motivated synthetic corruptions, not a
+calibrated physical-sensor model.
 
-Temporal input influence and the fixed hardware benchmark are separate:
+For the complete clean-selected `T=32` diagnostic package (all four committed
+grids, temporal input gradients, and non-overlapping fixed benchmarks), use
+the resumable scheduler:
+
+```bash
+python scripts/run_diagnostics.py --workers 3
+```
+
+It caches each raw-event corruption once, evaluates matched run directories
+sequentially while allowing different models to run concurrently, and removes
+each cache only after its group succeeds. Benchmarks are always serialized so
+their timings cannot interfere with one another.
+
+Individual temporal input influence and fixed benchmark commands remain
+available:
 
 ```bash
 python -m experiments.cli temporal-influence --config <config.yml> \
@@ -178,6 +216,11 @@ python -m experiments.cli temporal-influence --config <config.yml> \
 python -m experiments.cli benchmark --config <config.yml> \
   --warmup 100 --iterations 500 --output <benchmark.json>
 ```
+
+The benchmark uses a synchronized, all-zero tensor already resident on the
+recorded device. It measures model-forward latency only, not event decoding,
+host transfer, end-to-end application latency, energy, or neuromorphic
+hardware efficiency.
 
 Use `evaluate --condition causal_prefix --severity 0.25`, `0.50`, `0.75`, and
 `1.00` for causal-prefix curves, and `reverse` or `permute` for temporal-order
@@ -188,13 +231,20 @@ controls.
 ```bash
 python -m experiments.cli analyze --runs-root runs_revision \
   --output aggregates/results.csv
+python scripts/aggregate_diagnostics.py
+python scripts/audit_empirical_package.py --require-diagnostics
 python -m experiments.cli reproduce --matrix configs/reproduction.yml \
   --target smoke --execute
 ```
 
 Aggregation reports hierarchical bootstrap intervals by resampling training
-seeds and then corruption draws within seeds. Manuscript tables should be built
-only from these aggregates, never by manual transcription.
+seeds and then corruption draws within seeds. Clean-relative density results
+use the matched `temporal_native` clean cell when their own experiment has no
+duplicate clean declaration, and the output records that reference explicitly.
+The audit checks all 695 declarations, sealed evaluation artifacts, hashes,
+sample/confusion counts, alias provenance, and diagnostic coverage. Manuscript
+tables should be built only from these audited aggregates, never by manual
+transcription.
 
 ## Controlled Comparator Scope
 

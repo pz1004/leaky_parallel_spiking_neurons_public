@@ -1,3 +1,8 @@
+schema_version: 1
+base_seed: 20240723
+shared_across_models_and_initialization_seeds: true
+note: Sensor-motivated synthetic corruptions and temporal distribution-shift diagnostics; not a calibrated physical-sensor noise model.
+manifest_hash: 2d3d740a8792819ec01dc544cd6ca4cac79f369231491563fd76d870116e2206
 grids:
   robustness:
     - {name: clean, severity: 0.0, draws: 1}
@@ -31,4 +36,4 @@ grids:
     - {name: temporal_sparse, severity: 0.25, draws: 10}
     - {name: temporal_sparse, severity: 0.50, draws: 10}
     - {name: temporal_sparse, severity: 0.75, draws: 10}
-    - {name: temporal_sparse, severity: 1.00, draws: 10}
+    - {name: temporal_sparse, severity: 1.00, draws: 1}

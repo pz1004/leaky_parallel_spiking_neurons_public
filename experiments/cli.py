@@ -38,6 +38,7 @@ from .config import (
     ConditionConfig,
     ExperimentConfig,
     environment_summary,
+    file_sha256,
     load_config,
     runtime_manifest,
     stable_hash,
@@ -46,7 +47,9 @@ from .config import (
 )
 from .data import (
     DATASET_META,
+    PERTURBATION_NAMESPACE_SEED,
     build_dataset,
+    cache_source_condition,
     frame_cache_namespace,
     load_split_manifest,
     prepare_split_manifest,
@@ -65,6 +68,19 @@ def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
 def _write_yaml(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(value, sort_keys=True), encoding="utf-8")
+
+
+def _project_path(path: Path) -> Path:
+    return path if path.is_absolute() else Path(__file__).resolve().parents[1] / path
+
+
+def _portable_path(path: Path) -> str:
+    resolved = _project_path(path).resolve()
+    project = Path(__file__).resolve().parents[1]
+    try:
+        return str(resolved.relative_to(project))
+    except ValueError:
+        return str(resolved)
 
 
 def _model(config: ExperimentConfig) -> SharedVGGSNN:
@@ -103,20 +119,27 @@ def command_prepare(args: argparse.Namespace) -> int:
 
 
 def command_cache(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = _condition_from_args(load_config(args.config), args)
     namespace = frame_cache_namespace(config)
     if namespace is None:
         raise ValueError("This configuration does not enable a cacheable frame source")
     manifest = load_split_manifest(Path(config.split_manifest))
+    source_condition = cache_source_condition(config.condition)
+    if source_condition is None:
+        raise ValueError("This configuration does not have a cache source condition")
     marker_payload = {
         "schema_version": 1,
         "dataset": config.dataset,
         "time_steps": config.time_steps,
         "image_size": config.image_size,
         "source_namespace": str(namespace),
-        "source_condition": namespace.name,
+        "source_condition": asdict(source_condition),
         "split_hash": manifest["split_hash"],
-        "samples": {name: len(rows) for name, rows in manifest["splits"].items()},
+        "splits": args.split or ["train", "val", "test"],
+        "samples": {
+            name: len(manifest["splits"][name])
+            for name in (args.split or ["train", "val", "test"])
+        },
     }
     marker_hash = stable_hash(marker_payload)
     marker = namespace / f".complete_{marker_hash}.json"
@@ -125,7 +148,7 @@ def command_cache(args: argparse.Namespace) -> int:
         return 0
     seen = 0
     started = time.perf_counter()
-    for split in ("train", "val", "test"):
+    for split in marker_payload["splits"]:
         dataset, selected_manifest = build_dataset(config, split)
         if selected_manifest["split_hash"] != manifest["split_hash"]:
             raise RuntimeError("Cache source and marker split hashes differ")
@@ -236,7 +259,11 @@ def command_train(args: argparse.Namespace) -> int:
         if config.patience > 0 and stale >= config.patience:
             break
     result = {
+        "schema_version": config.schema_version,
         "completed_at": utc_now(),
+        "experiment_id": config.experiment_id,
+        "config_hash": config.config_hash,
+        "split_hash": manifest["split_hash"],
         "dataset": config.dataset,
         "model": config.model,
         "seed": config.seed,
@@ -250,6 +277,11 @@ def command_train(args: argparse.Namespace) -> int:
         "executed_epochs": epoch,
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "trainable_parameter_count": sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad),
+        "checkpoint": _portable_path(run_dir / "checkpoint_best.pt"),
+        "checkpoint_sha256": file_sha256(
+            _project_path(run_dir / "checkpoint_best.pt")
+        ),
+        "independent_replication": True,
         "test_evaluated": False,
     }
     write_json(run_dir / "train_result.json", result)
@@ -305,32 +337,71 @@ def evaluate_checkpoint(config: ExperimentConfig, checkpoint_path: Path | None =
     )
     output_hash = stable_hash(key)[:12]
     sample_path = config.run_dir / f"per_sample_{output_hash}.jsonl"
+    confusion_path = config.run_dir / f"confusion_{output_hash}.npy"
+    evaluation_manifest_path = (
+        config.run_dir / "evaluation_manifests" / f"{output_hash}.json"
+    )
     payload = {
         **record_dict(record),
         "experiment_id": config.experiment_id,
         "config_hash": config.config_hash,
         "training_config_hash": checkpoint["config_hash"],
         "split_hash": manifest["split_hash"],
-        "checkpoint": str(selected_path),
+        "checkpoint": _portable_path(selected_path),
+        "checkpoint_sha256": file_sha256(_project_path(selected_path)),
         "checkpoint_epoch": int(checkpoint["epoch"]),
         "selection_split": checkpoint["selection_split"],
         "selection_metric": checkpoint["selection_metric"],
         "selection_value": checkpoint["selection_value"],
         "evaluated_at": utc_now(),
-        "per_sample_path": str(sample_path),
+        "per_sample_path": _portable_path(sample_path),
+        "evaluation_manifest_path": _portable_path(evaluation_manifest_path),
     }
     _append_jsonl(config.run_dir / "locked_test_metrics.jsonl", payload)
-    np.save(config.run_dir / f"confusion_{output_hash}.npy", confusion)
+    np.save(confusion_path, confusion)
     sample_path.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in sample_rows), encoding="utf-8"
     )
+    evaluation_manifest = asdict(
+        runtime_manifest(
+            config,
+            phase="locked_test_evaluation",
+            split_hash=manifest["split_hash"],
+        )
+    )
+    evaluation_manifest.update(
+        {
+            "evaluation_key": key,
+            "evaluation_config_hash": config.config_hash,
+            "training_config_hash": checkpoint["config_hash"],
+            "checkpoint": _portable_path(selected_path),
+            "checkpoint_sha256": payload["checkpoint_sha256"],
+            "checkpoint_epoch": int(checkpoint["epoch"]),
+            "selection_split": checkpoint["selection_split"],
+            "selection_metric": checkpoint["selection_metric"],
+            "selection_value": checkpoint["selection_value"],
+            "test_evaluated_at": payload["evaluated_at"],
+            "artifacts": {
+                "per_sample_path": _portable_path(sample_path),
+                "per_sample_sha256": file_sha256(_project_path(sample_path)),
+                "confusion_path": _portable_path(confusion_path),
+                "confusion_sha256": file_sha256(_project_path(confusion_path)),
+                "metrics_payload_sha256": stable_hash(payload),
+            },
+        }
+    )
+    evaluation_manifest["manifest_hash"] = stable_hash(evaluation_manifest)
+    write_json(evaluation_manifest_path, evaluation_manifest)
     _append_jsonl(
         ledger,
         {
             "evaluation_key": key,
             "evaluated_at": payload["evaluated_at"],
             "checkpoint_epoch": checkpoint["epoch"],
+            "checkpoint_sha256": payload["checkpoint_sha256"],
             "split_hash": manifest["split_hash"],
+            "evaluation_manifest_path": _portable_path(evaluation_manifest_path),
+            "evaluation_manifest_hash": evaluation_manifest["manifest_hash"],
         },
     )
     return payload
@@ -359,11 +430,16 @@ def corruption_grid() -> list[dict[str, Any]]:
 
 
 def command_corrupt(args: argparse.Namespace) -> int:
+    if args.seed != PERTURBATION_NAMESPACE_SEED:
+        raise ValueError(
+            "The perturbation namespace is protocol-locked to "
+            f"{PERTURBATION_NAMESPACE_SEED}; received {args.seed}"
+        )
     manifest = {
         "schema_version": 1,
         "created_at": utc_now(),
-        "base_seed": args.seed,
-        "shared_across_models": True,
+        "base_seed": PERTURBATION_NAMESPACE_SEED,
+        "shared_across_models_and_initialization_seeds": True,
         "conditions": corruption_grid(),
         "note": "Sensor-motivated synthetic corruptions; not a calibrated physical-sensor noise model.",
     }
@@ -466,10 +542,37 @@ def command_analyze(args: argparse.Namespace) -> int:
         if row["condition"] == "clean"
     }
     for row in summaries:
-        clean = clean_lookup.get((row["experiment_id"], row["dataset"], row["model"], row["time_steps"]))
+        same_experiment_key = (
+            row["experiment_id"],
+            row["dataset"],
+            row["model"],
+            row["time_steps"],
+        )
+        reference_key = same_experiment_key
+        clean = clean_lookup.get(reference_key)
+        reference_type = "same_experiment"
+        if clean is None:
+            reference_key = (
+                "temporal_native",
+                row["dataset"],
+                row["model"],
+                row["time_steps"],
+            )
+            clean = clean_lookup.get(reference_key)
+            reference_type = (
+                "temporal_native_matched_fallback"
+                if clean is not None
+                else "unavailable"
+            )
+        row["clean_reference_experiment_id"] = (
+            reference_key[0] if clean is not None else None
+        )
+        row["clean_reference_type"] = reference_type
         row["clean_accuracy_mean"] = clean
         row["absolute_accuracy_drop"] = None if clean is None else clean - row["accuracy_mean"]
-        row["relative_accuracy_drop"] = None if not clean else (clean - row["accuracy_mean"]) / clean
+        row["relative_accuracy_drop"] = (
+            None if clean is None or clean == 0 else (clean - row["accuracy_mean"]) / clean
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(summaries[0]))
@@ -483,14 +586,40 @@ def command_analyze(args: argparse.Namespace) -> int:
     robustness_rows: list[dict[str, Any]] = []
     for key, selected in sorted(robustness_groups.items()):
         ordered = sorted(selected, key=lambda row: float(row["severity"]))
-        x = np.asarray([float(row["severity"]) for row in ordered])
-        y = np.asarray([float(row["accuracy_mean"]) for row in ordered])
+        x_values = [float(row["severity"]) for row in ordered]
+        y_values = [float(row["accuracy_mean"]) for row in ordered]
+        clean_reference = ordered[0].get("clean_accuracy_mean")
+        if clean_reference is not None and x_values[0] > 0:
+            x_values.insert(0, 0.0)
+            y_values.insert(0, float(clean_reference))
+        x = np.asarray(x_values)
+        y = np.asarray(y_values)
+        worst_accuracy = float(np.min(y[1:] if len(y) > len(ordered) else y))
         robustness_rows.append(
             {
                 **dict(zip(("experiment_id", "dataset", "model", "time_steps", "condition"), key)),
+                "clean_reference_experiment_id": ordered[0].get(
+                    "clean_reference_experiment_id"
+                ),
+                "clean_accuracy_mean": clean_reference,
                 "severity_auc_accuracy": float(np.trapezoid(y, x) / (x[-1] - x[0])) if len(x) > 1 and x[-1] > x[0] else float(y[0]),
-                "worst_severity": float(x[np.argmin(y)]),
-                "worst_accuracy": float(y.min()),
+                "worst_severity": float(
+                    ordered[
+                        int(np.argmin([float(row["accuracy_mean"]) for row in ordered]))
+                    ]["severity"]
+                ),
+                "worst_accuracy": worst_accuracy,
+                "worst_absolute_accuracy_drop": (
+                    None
+                    if clean_reference is None
+                    else float(clean_reference) - worst_accuracy
+                ),
+                "worst_relative_accuracy_drop": (
+                    None
+                    if clean_reference is None or float(clean_reference) == 0
+                    else (float(clean_reference) - worst_accuracy)
+                    / float(clean_reference)
+                ),
             }
         )
     if robustness_rows:
@@ -500,14 +629,91 @@ def command_analyze(args: argparse.Namespace) -> int:
             writer.writeheader()
             writer.writerows(robustness_rows)
 
+    pair_key_fields = (
+        "experiment_id",
+        "dataset",
+        "time_steps",
+        "condition",
+        "severity",
+        "seed",
+        "draw",
+    )
+    baseline_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in rows:
+        if row["model"] != "psn":
+            continue
+        key = tuple(row[field] for field in pair_key_fields)
+        if key in baseline_rows:
+            raise RuntimeError(f"Duplicate PSN pairing key: {key}")
+        baseline_rows[key] = row
+    paired_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    paired_group_fields = (
+        "experiment_id",
+        "dataset",
+        "model",
+        "time_steps",
+        "condition",
+        "severity",
+    )
+    for row in rows:
+        if row["model"] == "psn":
+            continue
+        baseline_key = tuple(row[field] for field in pair_key_fields)
+        baseline = baseline_rows.get(baseline_key)
+        if baseline is None:
+            continue
+        paired_groups.setdefault(
+            tuple(row[field] for field in paired_group_fields), []
+        ).append(
+            {
+                "seed": int(row["seed"]),
+                "draw": int(row["draw"]),
+                "accuracy_delta": float(row["accuracy"])
+                - float(baseline["accuracy"]),
+                "macro_f1_delta": float(row["macro_f1"])
+                - float(baseline["macro_f1"]),
+            }
+        )
+    paired_rows: list[dict[str, Any]] = []
+    for key, selected in sorted(paired_groups.items()):
+        result = {
+            **dict(zip(paired_group_fields, key)),
+            "baseline_model": "psn",
+            "matched_pairs": len(selected),
+            "n_seeds": len({row["seed"] for row in selected}),
+            "n_draws": len({row["draw"] for row in selected}),
+        }
+        for metric in ("accuracy_delta", "macro_f1_delta"):
+            values = np.asarray([float(row[metric]) for row in selected])
+            low, high = _bootstrap_interval(selected, metric)
+            result[f"{metric}_mean"] = float(values.mean())
+            result[f"{metric}_std"] = (
+                float(values.std(ddof=1)) if len(values) > 1 else 0.0
+            )
+            result[f"{metric}_ci_low"] = low
+            result[f"{metric}_ci_high"] = high
+            result[f"{metric}_wins"] = int(np.sum(values > 0))
+            result[f"{metric}_ties"] = int(np.sum(values == 0))
+            result[f"{metric}_losses"] = int(np.sum(values < 0))
+        paired_rows.append(result)
+    if paired_rows:
+        paired_path = args.output.with_name(args.output.stem + "_paired.csv")
+        with paired_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(paired_rows[0]))
+            writer.writeheader()
+            writer.writerows(paired_rows)
+
     class_counts: dict[tuple, list[int]] = {}
     strata_counts: dict[tuple, list[int]] = {}
     for metric_row in rows:
         sample_path_value = metric_row.get("per_sample_path")
-        if not sample_path_value or not Path(sample_path_value).exists():
+        if not sample_path_value:
+            continue
+        sample_path = _project_path(Path(sample_path_value))
+        if not sample_path.exists():
             continue
         samples_for_evaluation = [
-            json.loads(line) for line in Path(sample_path_value).read_text(encoding="utf-8").splitlines() if line.strip()
+            json.loads(line) for line in sample_path.read_text(encoding="utf-8").splitlines() if line.strip()
         ]
         prefix = (
             metric_row["experiment_id"], metric_row["dataset"], metric_row["model"], metric_row["time_steps"],
@@ -548,21 +754,90 @@ def command_analyze(args: argparse.Namespace) -> int:
                 writer = csv.DictWriter(handle, fieldnames=list(output_rows[0]))
                 writer.writeheader()
                 writer.writerows(output_rows)
-    write_json(args.output.with_suffix(".manifest.json"), {
+
+    training_rows: list[dict[str, Any]] = []
+    for path in sorted(args.runs_root.rglob("train_result.json")):
+        row = json.loads(path.read_text(encoding="utf-8"))
+        relative = path.relative_to(args.runs_root)
+        if not relative.parts:
+            continue
+        training_rows.append(
+            {
+                **row,
+                "experiment_id": row.get("experiment_id", relative.parts[0]),
+            }
+        )
+    training_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    training_keys = ("experiment_id", "dataset", "model", "time_steps")
+    for row in training_rows:
+        training_groups.setdefault(
+            tuple(row[key] for key in training_keys), []
+        ).append(row)
+    training_summaries: list[dict[str, Any]] = []
+    for key, selected in sorted(training_groups.items()):
+        result = {
+            **dict(zip(training_keys, key)),
+            "n_seeds": len({int(row["seed"]) for row in selected}),
+            "parameter_count": int(selected[0]["parameter_count"]),
+            "trainable_parameter_count": int(
+                selected[0]["trainable_parameter_count"]
+            ),
+        }
+        for metric in (
+            "best_validation_value",
+            "best_validation_accuracy",
+            "best_epoch",
+            "executed_epochs",
+        ):
+            metric_rows = [
+                {"seed": int(row["seed"]), metric: float(row[metric])}
+                for row in selected
+            ]
+            values = np.asarray([row[metric] for row in metric_rows])
+            low, high = _bootstrap_interval(metric_rows, metric)
+            result[f"{metric}_mean"] = float(values.mean())
+            result[f"{metric}_std"] = (
+                float(values.std(ddof=1)) if len(values) > 1 else 0.0
+            )
+            result[f"{metric}_ci_low"] = low
+            result[f"{metric}_ci_high"] = high
+        training_summaries.append(result)
+    if training_summaries:
+        path = args.output.with_name(args.output.stem + "_training.csv")
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle, fieldnames=list(training_summaries[0])
+            )
+            writer.writeheader()
+            writer.writerows(training_summaries)
+
+    source_paths = sorted(args.runs_root.rglob("locked_test_metrics.jsonl"))
+    training_source_paths = sorted(args.runs_root.rglob("train_result.json"))
+    aggregate_manifest = {
         "created_at": utc_now(),
         "source_root": str(args.runs_root),
-        "source_files": len(list(args.runs_root.rglob("locked_test_metrics.jsonl"))),
+        "source_files": [
+            {
+                "path": _portable_path(path),
+                "sha256": file_sha256(path),
+            }
+            for path in source_paths + training_source_paths
+        ],
         "rows": len(rows),
         "groups": len(summaries),
+        "training_rows": len(training_rows),
+        "training_groups": len(training_summaries),
         "bootstrap": "hierarchical seed then within-seed draw resampling, 2000 replicates",
-    })
+    }
+    aggregate_manifest["manifest_hash"] = stable_hash(aggregate_manifest)
+    write_json(args.output.with_suffix(".manifest.json"), aggregate_manifest)
     print(json.dumps({"output": str(args.output), "rows": len(rows), "groups": len(summaries)}, indent=2))
     return 0
 
 
 def command_temporal_influence(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    model, checkpoint, _path = _load_checkpoint(config, args.checkpoint)
+    model, checkpoint, checkpoint_path = _load_checkpoint(config, args.checkpoint)
     dataset, manifest = build_dataset(config, "test", condition=ConditionConfig())
     loader = make_loader(dataset, config, shuffle=False)
     device = torch.device(config.device)
@@ -585,19 +860,32 @@ def command_temporal_influence(args: argparse.Namespace) -> int:
     cumulative = np.cumsum(normalized[::-1])[::-1]
     horizon_candidates = np.flatnonzero(cumulative >= 0.90)
     result = {
+        "schema_version": 1,
         "created_at": utc_now(),
         "dataset": config.dataset,
         "model": config.model,
         "seed": config.seed,
         "time_steps": config.time_steps,
         "checkpoint_epoch": checkpoint["epoch"],
+        "checkpoint": _portable_path(checkpoint_path),
+        "checkpoint_sha256": file_sha256(_project_path(checkpoint_path)),
+        "training_config_hash": checkpoint["config_hash"],
+        "diagnostic_config_hash": config.config_hash,
         "split_hash": manifest["split_hash"],
         "samples": samples,
         "normalized_absolute_input_gradient": normalized.tolist(),
         "reverse_cumulative_influence": cumulative.tolist(),
         "effective_horizon_90_percent": int(config.time_steps - horizon_candidates[-1]) if len(horizon_candidates) else 0,
         "limitation": "Input gradients are an attribution diagnostic, not causal proof of memory.",
+        "runtime": asdict(
+            runtime_manifest(
+                config,
+                phase="temporal_input_gradient_diagnostic",
+                split_hash=manifest["split_hash"],
+            )
+        ),
     }
+    result["manifest_hash"] = stable_hash(result)
     write_json(args.output, result)
     print(json.dumps(result, indent=2))
     return 0
@@ -605,7 +893,7 @@ def command_temporal_influence(args: argparse.Namespace) -> int:
 
 def command_benchmark(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    model, checkpoint, _path = _load_checkpoint(config, args.checkpoint)
+    model, checkpoint, checkpoint_path = _load_checkpoint(config, args.checkpoint)
     device = torch.device(config.device)
     batch = torch.zeros(
         config.batch_size, config.time_steps, 2, config.image_size, config.image_size, device=device
@@ -625,19 +913,43 @@ def command_benchmark(args: argparse.Namespace) -> int:
             torch.cuda.synchronize(device)
         seconds = time.perf_counter() - start
     result = {
+        "schema_version": 1,
         "created_at": utc_now(),
         "dataset": config.dataset,
         "model": config.model,
         "time_steps": config.time_steps,
         "checkpoint_epoch": checkpoint["epoch"],
+        "checkpoint": _portable_path(checkpoint_path),
+        "checkpoint_sha256": file_sha256(_project_path(checkpoint_path)),
+        "training_config_hash": checkpoint["config_hash"],
+        "benchmark_config_hash": config.config_hash,
         "batch_size": config.batch_size,
+        "input_shape": list(batch.shape),
+        "input_dtype": str(batch.dtype),
+        "input_distribution": "all-zero synthetic tensor already resident on device",
+        "device": str(device),
+        "device_name": (
+            torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
+        ),
         "warmup_iterations": args.warmup,
         "timed_iterations": args.iterations,
         "latency_ms_per_batch": seconds * 1000 / args.iterations,
         "throughput_samples_per_second": config.batch_size * args.iterations / seconds,
         "peak_cuda_memory_mb": torch.cuda.max_memory_allocated(device) / 1024**2 if device.type == "cuda" else 0.0,
         "synchronization": device.type == "cuda",
+        "scope": (
+            "Model-forward latency only; excludes event decoding, frame construction, "
+            "host-to-device transfer, and neuromorphic hardware energy."
+        ),
+        "runtime": asdict(
+            runtime_manifest(
+                config,
+                phase="fixed_forward_benchmark",
+                split_hash=checkpoint["split_hash"],
+            )
+        ),
     }
+    result["manifest_hash"] = stable_hash(result)
     write_json(args.output, result)
     print(json.dumps(result, indent=2))
     return 0
@@ -675,6 +987,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Read every cached sample even when a completion marker exists",
     )
+    cache.add_argument(
+        "--split",
+        action="append",
+        choices=["train", "val", "test"],
+        help="Cache only the selected split; may be repeated (default: all splits)",
+    )
+    cache.add_argument("--condition")
+    cache.add_argument("--severity", type=float, default=0.0)
+    cache.add_argument("--draw", type=int, default=0)
+    cache.add_argument("--renormalize", action="store_true")
     cache.set_defaults(function=command_cache)
 
     train = subparsers.add_parser("train", help="Train with validation-only checkpoint selection")

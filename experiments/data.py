@@ -23,6 +23,7 @@ DATASET_META = {
     "dvs_gesture": {"height": 128, "width": 128, "classes": 11},
     "hardvs": {"height": 260, "width": 346, "classes": 300},
 }
+PERTURBATION_NAMESPACE_SEED = 20240723
 
 
 def _record(sample_id: str, path: Path | None, label: int, group: str = "") -> dict[str, Any]:
@@ -147,6 +148,7 @@ def _synthetic_splits(seed: int) -> dict[str, list[dict[str, Any]]]:
 
 
 def prepare_split_manifest(dataset: str, data_root: Path, output: Path, *, seed: int = 20240723) -> dict[str, Any]:
+    dataset_integrity: dict[str, Any] | None = None
     if dataset == "synthetic":
         splits = _synthetic_splits(seed)
     elif dataset == "cifar10_dvs":
@@ -155,6 +157,35 @@ def prepare_split_manifest(dataset: str, data_root: Path, output: Path, *, seed:
         splits = _scan_gesture(data_root, seed)
     elif dataset == "hardvs":
         splits = _scan_hardvs(data_root)
+        integrity_path = data_root / "HARDVS" / "integrity_record.json"
+        if not integrity_path.is_file():
+            raise FileNotFoundError(
+                "HARDVS requires the hash-protected integrity_record.json "
+                "created by scripts/prepare_hardvs.py"
+            )
+        integrity = json.loads(integrity_path.read_text(encoding="utf-8"))
+        claimed_hash = integrity.pop("record_hash", None)
+        if claimed_hash != stable_hash(integrity):
+            raise ValueError(f"HARDVS integrity-record hash mismatch: {integrity_path}")
+        observed_counts = {name: len(rows) for name, rows in splits.items()}
+        observed_with_total = {
+            **observed_counts,
+            "assigned": sum(observed_counts.values()),
+        }
+        if observed_with_total != integrity["splits"]["effective_counts"]:
+            raise ValueError(
+                "HARDVS materialized split counts disagree with the integrity record"
+            )
+        dataset_integrity = {
+            "record_path": str(integrity_path.relative_to(data_root)),
+            "record_hash": claimed_hash,
+            "integrity_mode": integrity["integrity_mode"],
+            "source_deviation": integrity["source_deviation"],
+            "archive_md5": integrity["archive"]["md5"],
+            "archive_sha256": integrity["archive"]["sha256"],
+            "effective_counts": integrity["splits"]["effective_counts"],
+            "excluded_sample_ids": integrity["splits"]["excluded_sample_ids"],
+        }
     else:
         raise ValueError(dataset)
     manifest = {
@@ -166,8 +197,13 @@ def prepare_split_manifest(dataset: str, data_root: Path, output: Path, *, seed:
         "created_at": utc_now(),
         "splits": splits,
     }
+    if dataset_integrity is not None:
+        manifest["dataset_integrity"] = dataset_integrity
     validate_split_manifest(manifest)
-    manifest["split_hash"] = stable_hash({"dataset": dataset, "seed": seed, "splits": splits})
+    hash_payload = {"dataset": dataset, "seed": seed, "splits": splits}
+    if dataset_integrity is not None:
+        hash_payload["dataset_integrity"] = dataset_integrity
+    manifest["split_hash"] = stable_hash(hash_payload)
     write_json(output, manifest)
     return manifest
 
@@ -191,34 +227,69 @@ def validate_split_manifest(manifest: dict[str, Any]) -> None:
         val_groups = {row["group"] for row in manifest["splits"]["val"]}
         if train_groups & val_groups:
             raise ValueError("DVS-Gesture train and validation subjects overlap")
+    if dataset == "hardvs":
+        integrity = manifest.get("dataset_integrity")
+        if not isinstance(integrity, dict):
+            raise ValueError("HARDVS split manifests require dataset_integrity")
+        if integrity.get("integrity_mode") not in {
+            "official_exact",
+            "known_corrupt_mirror_exclusion",
+        }:
+            raise ValueError("Unknown HARDVS integrity mode")
+        counts = {
+            name: len(manifest["splits"][name])
+            for name in ("train", "val", "test")
+        }
+        observed = {**counts, "assigned": sum(counts.values())}
+        if observed != integrity.get("effective_counts"):
+            raise ValueError("HARDVS split counts disagree with dataset_integrity")
+        if (
+            integrity["integrity_mode"] == "known_corrupt_mirror_exclusion"
+            and len(integrity.get("excluded_sample_ids", [])) != 6
+        ):
+            raise ValueError("Known-mirror HARDVS mode must record six exclusions")
 
 
 def load_split_manifest(path: Path) -> dict[str, Any]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     validate_split_manifest(manifest)
-    expected = stable_hash(
-        {"dataset": manifest["dataset"], "seed": manifest["split_seed"], "splits": manifest["splits"]}
-    )
+    hash_payload = {
+        "dataset": manifest["dataset"],
+        "seed": manifest["split_seed"],
+        "splits": manifest["splits"],
+    }
+    if "dataset_integrity" in manifest:
+        hash_payload["dataset_integrity"] = manifest["dataset_integrity"]
+    expected = stable_hash(hash_payload)
     if manifest.get("split_hash") != expected:
         raise ValueError(f"Split-manifest hash mismatch: {path}")
     return manifest
 
 
 def _seed_for(sample_id: str, condition: ConditionConfig, base_seed: int) -> int:
+    # Input perturbations are a fixed part of the evaluation/training cell and
+    # are shared across model-initialization seeds. Randomness is determined
+    # only by sample, condition, severity, and declared draw. This preserves a
+    # paired design rather than silently assigning every trained checkpoint a
+    # different corruption realization.
+    _ = base_seed  # retained in the call signature for compatibility
     # The renormalized-thinning arm must use the *same retained events* as the
     # unrenormalized arm; only the post-binning amplitude multiplier may differ.
     # Using the literal condition name here would confound that control with a
     # second random subset.
     randomization_name = "event_thin" if condition.name == "event_thin_renorm" else condition.name
     value = (
-        f"{sample_id}|{randomization_name}|{condition.severity:.12g}|"
-        f"{condition.draw}|{base_seed}"
+        f"{PERTURBATION_NAMESPACE_SEED}|{sample_id}|{randomization_name}|"
+        f"{condition.severity:.12g}|"
+        f"{condition.draw}"
     )
     return int.from_bytes(hashlib.sha256(value.encode("utf-8")).digest()[:8], "little")
 
 
 def _synthetic_seed_for(sample_id: str, base_seed: int) -> int:
-    value = f"{sample_id}|synthetic_source|{base_seed}"
+    # The synthetic fixture is a dataset, not model-initialization noise.
+    _ = base_seed
+    value = f"{sample_id}|synthetic_source"
     return int.from_bytes(hashlib.sha256(value.encode("utf-8")).digest()[:8], "little")
 
 
@@ -356,13 +427,14 @@ def frame_condition(frames: torch.Tensor, condition: ConditionConfig, rng: np.ra
     return output
 
 
-def _cache_source_condition(condition: ConditionConfig) -> ConditionConfig | None:
+def cache_source_condition(condition: ConditionConfig) -> ConditionConfig | None:
     """Return the raw-event transform whose binned frames can be reused.
 
     Frame-only controls are derived losslessly from clean cached frames.
     Renormalized thinning reuses the exact unscaled frames from its matched
-    unrenormalized thinning arm. Sensor corruptions remain uncached because
-    they are single-pass locked-test evaluations rather than repeated epochs.
+    unrenormalized thinning arm. Raw-event sensor corruptions use their own
+    condition/draw namespace so an expensive event file is decoded and
+    corrupted once, then reused identically across matched models.
     """
 
     if condition.name in {
@@ -380,6 +452,15 @@ def _cache_source_condition(condition: ConditionConfig) -> ConditionConfig | Non
             severity=condition.severity,
             draw=condition.draw,
         )
+    if condition.name in {
+        "event_dropout",
+        "background_activity",
+        "polarity_flip",
+        "temporal_jitter",
+        "packet_loss",
+        "hot_pixels",
+    }:
+        return condition
     return None
 
 
@@ -387,10 +468,10 @@ def frame_cache_namespace(
     config: ExperimentConfig, condition: ConditionConfig | None = None
 ) -> Path | None:
     selected = config.condition if condition is None else condition
-    source = _cache_source_condition(selected)
+    source = cache_source_condition(selected)
     if not config.cache_frames or source is None:
         return None
-    seed = config.seed if source.name == "event_thin" else 0
+    seed = 0
     condition = f"{source.name}_{source.severity:.12g}_draw{source.draw}_seed{seed}"
     return (
         Path(str(config.frame_cache_root))
@@ -470,7 +551,7 @@ class EventManifestDataset(Dataset):
 
     def __getitem__(self, index: int):
         record = self.records[index]
-        source_condition = _cache_source_condition(self.condition)
+        source_condition = cache_source_condition(self.condition)
         cache_path = (
             _cache_key(self.config, source_condition, record["id"])
             if self.config.cache_frames and source_condition is not None

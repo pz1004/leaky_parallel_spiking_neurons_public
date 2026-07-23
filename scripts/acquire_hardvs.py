@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Acquire and verify the full HARDVS compact-event archive.
+"""Acquire and cryptographically verify the HARDVS compact-event archive.
 
-The official project links a single 244.899 GB Baidu object. A public mirror
-stores that exact-size object as 23 ordered binary chunks. This script downloads
-the pinned chunks concurrently, verifies every SHA-256 digest, concatenates them
-in order, and verifies the resulting ZIP central directory. It is resumable:
-partial HTTP downloads and a boundary-aligned combined archive are reused.
+The official project links a single 244.899 GB Baidu object. A pinned public
+mirror stores a same-size object as 23 ordered binary chunks, but that combined
+object is not byte-identical to the official archive and contains six corrupt
+NPZ members. Exact official bytes are required by default. The known mirror can
+be used only with an explicit opt-in that verifies its combined MD5/SHA-256 and
+reproduces the complete six-member CRC failure inventory.
+
+The download is resumable: partial HTTP downloads and a boundary-aligned
+combined archive are reused.
 """
 
 from __future__ import annotations
@@ -34,6 +38,20 @@ def digest(path: Path, algorithm: str = "sha256") -> str:
         while block := handle.read(BUFFER_SIZE):
             value.update(block)
     return value.hexdigest()
+
+
+def combined_digests(path: Path, algorithms: tuple[str, ...]) -> dict[str, str]:
+    values = {name: hashlib.new(name) for name in algorithms}
+    with path.open("rb") as handle:
+        while block := handle.read(BUFFER_SIZE):
+            for value in values.values():
+                value.update(block)
+    return {name: value.hexdigest() for name, value in values.items()}
+
+
+def stable_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def request(url: str, start: int = 0):
@@ -144,9 +162,13 @@ def concatenate(
         raise RuntimeError(f"combined size mismatch: {archive.stat().st_size} != {expected}")
 
 
-def download_labels(manifest: dict[str, Any], output: Path, attempts: int) -> None:
+def download_labels(
+    manifest: dict[str, Any], output: Path, attempts: int
+) -> list[dict[str, Any]]:
     repo = manifest["mirror_repository"]
-    base = f"https://huggingface.co/datasets/{repo}/resolve/main"
+    revision = manifest["mirror_revision"]
+    base = f"https://huggingface.co/datasets/{repo}/resolve/{revision}"
+    verified: list[dict[str, Any]] = []
     for label in manifest["labels"]:
         part = {
             "name": label["name"],
@@ -157,12 +179,91 @@ def download_labels(manifest: dict[str, Any], output: Path, attempts: int) -> No
         actual_md5 = digest(path, "md5")
         if actual_md5 != label["md5"]:
             raise RuntimeError(f"MD5 mismatch for {path}: {actual_md5} != {label['md5']}")
+        verified.append(
+            {
+                "name": path.name,
+                "size": path.stat().st_size,
+                "md5": actual_md5,
+                "sha256": digest(path),
+                "samples": int(label["samples"]),
+            }
+        )
+    return verified
 
 
-def verify_zip(manifest: dict[str, Any], archive: Path) -> None:
+def verify_zip(
+    manifest: dict[str, Any],
+    archive: Path,
+    *,
+    allow_known_corrupt_mirror: bool = False,
+) -> dict[str, Any]:
+    if archive.stat().st_size != int(manifest["archive_size"]):
+        raise RuntimeError(
+            f"archive-size mismatch: {archive.stat().st_size} "
+            f"!= {manifest['archive_size']}"
+        )
+    archive_hashes = combined_digests(archive, ("md5", "sha256"))
+    official_md5 = str(manifest["official_archive_md5"])
+    mirror_md5 = str(manifest["known_mirror_archive_md5"])
+    if archive_hashes["md5"] == official_md5:
+        integrity_mode = "official_exact"
+        expected_bad: set[str] = set()
+    elif archive_hashes["md5"] == mirror_md5:
+        if not allow_known_corrupt_mirror:
+            raise RuntimeError(
+                "The pinned mirror is not byte-identical to the official HARDVS "
+                f"archive (mirror MD5 {mirror_md5}; official MD5 {official_md5}) "
+                "and contains six corrupt assigned samples. Supply an exact "
+                "official archive, or rerun with --allow-known-corrupt-mirror "
+                "to use the explicit exclusion protocol."
+            )
+        expected_sha256 = str(manifest["known_mirror_archive_sha256"])
+        if archive_hashes["sha256"] != expected_sha256:
+            raise RuntimeError(
+                "Known-mirror SHA-256 mismatch: "
+                f"{archive_hashes['sha256']} != {expected_sha256}"
+            )
+        integrity_mode = "known_corrupt_mirror_exclusion"
+        expected_bad = {
+            str(row["member"]) for row in manifest["known_mirror_corrupt_samples"]
+        }
+    else:
+        raise RuntimeError(
+            "Archive MD5 matches neither the exact official object nor the "
+            f"pinned known mirror: {archive_hashes['md5']}"
+        )
+
+    bad: list[dict[str, str]] = []
+    started = time.time()
     with zipfile.ZipFile(archive) as handle:
         infos = handle.infolist()
-    npz_count = sum(info.filename.lower().endswith(".npz") for info in infos)
+        npz_infos = [
+            info for info in infos if not info.is_dir() and info.filename.lower().endswith(".npz")
+        ]
+        for index, info in enumerate(npz_infos, start=1):
+            try:
+                with handle.open(info) as source:
+                    while source.read(BUFFER_SIZE):
+                        pass
+            except Exception as error:  # exact names are checked below
+                row = {
+                    "member": info.filename,
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+                bad.append(row)
+                print(
+                    f"[bad ZIP member] {info.filename}: "
+                    f"{row['error_type']}: {row['error']}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if index % 5000 == 0:
+                print(
+                    f"[full CRC] {index}/{len(npz_infos)} bad={len(bad)}",
+                    flush=True,
+                )
+    npz_count = len(npz_infos)
     uncompressed = sum(info.file_size for info in infos)
     if len(infos) != int(manifest["archive_entries"]):
         raise RuntimeError(f"ZIP entry count mismatch: {len(infos)}")
@@ -170,11 +271,31 @@ def verify_zip(manifest: dict[str, Any], archive: Path) -> None:
         raise RuntimeError(f"ZIP NPZ count mismatch: {npz_count}")
     if uncompressed != int(manifest["uncompressed_bytes"]):
         raise RuntimeError(f"ZIP uncompressed-byte mismatch: {uncompressed}")
+    actual_bad = {row["member"] for row in bad}
+    if actual_bad != expected_bad:
+        missing = sorted(expected_bad - actual_bad)
+        unexpected = sorted(actual_bad - expected_bad)
+        raise RuntimeError(
+            "Full ZIP CRC inventory mismatch: "
+            f"missing expected failures={missing}; unexpected failures={unexpected}"
+        )
     print(
-        f"[zip verified] entries={len(infos)} npz={npz_count} "
-        f"uncompressed={uncompressed}",
+        f"[zip verified] mode={integrity_mode} entries={len(infos)} "
+        f"npz={npz_count} bad={len(bad)} uncompressed={uncompressed}",
         flush=True,
     )
+    return {
+        "integrity_mode": integrity_mode,
+        "archive_size": archive.stat().st_size,
+        "archive_md5": archive_hashes["md5"],
+        "archive_sha256": archive_hashes["sha256"],
+        "archive_entries": len(infos),
+        "npz_entries": npz_count,
+        "uncompressed_bytes": uncompressed,
+        "full_crc_members": len(npz_infos),
+        "full_crc_failures": bad,
+        "full_crc_seconds": time.time() - started,
+    }
 
 
 def main() -> None:
@@ -183,8 +304,17 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, default=default_manifest)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--attempts", type=int, default=8)
+    parser.add_argument("--attempts", type=int, default=100)
     parser.add_argument("--keep-chunks", action="store_true")
+    parser.add_argument(
+        "--allow-known-corrupt-mirror",
+        action="store_true",
+        help=(
+            "Explicitly accept the pinned non-official mirror only after its "
+            "combined hashes and complete six-member CRC failure set match "
+            "the manifest. The preparation step will exclude those samples."
+        ),
+    )
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be positive")
@@ -201,10 +331,6 @@ def main() -> None:
     labels_dir = output / "labels"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     labels_dir.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(output).free
-    required = int(manifest["archive_size"]) + 16 * 1024**3
-    if free < required:
-        raise RuntimeError(f"insufficient free space: {free} bytes; require at least {required}")
 
     revision = manifest["mirror_revision"]
     repo = manifest["mirror_repository"]
@@ -214,6 +340,10 @@ def main() -> None:
     archive = output / manifest["archive_name"]
     already_combined = valid_combined_parts(archive, parts)
     pending = parts[already_combined:]
+    free = shutil.disk_usage(output).free
+    required = sum(int(row["size"]) for row in pending) + 16 * 1024**3
+    if free < required:
+        raise RuntimeError(f"insufficient free space: {free} bytes; require at least {required}")
     if pending:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = [
@@ -223,8 +353,37 @@ def main() -> None:
             for future in concurrent.futures.as_completed(futures):
                 future.result()
         concatenate(archive, chunks_dir, parts, args.keep_chunks)
-    download_labels(manifest, labels_dir, args.attempts)
-    verify_zip(manifest, archive)
+    label_records = download_labels(manifest, labels_dir, args.attempts)
+    verification = verify_zip(
+        manifest,
+        archive,
+        allow_known_corrupt_mirror=args.allow_known_corrupt_mirror,
+    )
+    record = {
+        "schema_version": 2,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "manifest": str(args.manifest.resolve()),
+        "manifest_sha256": digest(args.manifest.resolve()),
+        "mirror_repository": repo,
+        "mirror_revision": revision,
+        "pending_chunk_count_at_start": len(pending),
+        "pending_chunk_sha256_verification": (
+            "each pending chunk was verified before concatenation"
+            if pending
+            else "not applicable: a complete combined archive was already present"
+        ),
+        "combined_archive_hashes_verified": True,
+        "preexisting_combined_archive": not bool(pending),
+        "labels": label_records,
+        **verification,
+    }
+    record["record_hash"] = stable_hash(record)
+    record_path = output / "acquisition_record.json"
+    record_path.write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"[record] {record_path}", flush=True)
     print(f"[complete] {archive}", flush=True)
 
 

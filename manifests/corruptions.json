@@ -98,8 +98,8 @@
     }
   ],
   "created_at": "2026-07-23T02:49:09.326910+00:00",
-  "manifest_hash": "a85da3c5ef48e4b4d0a16b0ccac93c58eb18b3914fb3d5c1cb5ba6f36f2afde3",
+  "manifest_hash": "613448ec18263a51adfe2f2ae3aa04da25a27bdcd2dd277cac9116e7a486b839",
   "note": "Sensor-motivated synthetic corruptions; not a calibrated physical-sensor noise model.",
   "schema_version": 1,
-  "shared_across_models": true
+  "shared_across_models_and_initialization_seeds": true
 }

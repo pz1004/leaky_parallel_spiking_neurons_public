@@ -26,7 +26,13 @@ import yaml
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 
-from experiments.config import ExperimentConfig, load_config, stable_hash  # noqa: E402
+from experiments.config import (  # noqa: E402
+    ExperimentConfig,
+    file_sha256,
+    load_config,
+    runtime_manifest,
+    stable_hash,
+)
 from experiments.data import frame_cache_namespace, load_split_manifest  # noqa: E402
 
 IDENTITY_CONDITIONS = {"event_thin", "event_thin_renorm", "amplitude_scale", "temporal_sparse"}
@@ -179,10 +185,29 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
     for name in (
         "checkpoint_best.pt",
         "validation_confusion_best.npy",
-        "metrics.jsonl",
         "environment.json",
     ):
         link_or_copy(source_dir / name, target_dir / name)
+    source_metric_rows = [
+        json.loads(line)
+        for line in (source_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    for row in source_metric_rows:
+        validation = row.get("validation")
+        if isinstance(validation, dict):
+            validation.update(
+                {
+                    "condition": target.condition.name,
+                    "severity": target.condition.severity,
+                    "draw": target.condition.draw,
+                }
+            )
+        row["equivalent_training_source"] = proof["source_config"]
+    (target_dir / "metrics.jsonl").write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in source_metric_rows),
+        encoding="utf-8",
+    )
 
     result = json.loads((source_dir / "train_result.json").read_text(encoding="utf-8"))
     result.update(
@@ -190,8 +215,15 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
             "experiment_id": target.experiment_id,
             "condition": asdict(target.condition),
             "config_hash": target.config_hash,
+            "checkpoint": str(
+                (target_dir / "checkpoint_best.pt").relative_to(PROJECT)
+            ),
+            "checkpoint_sha256": file_sha256(
+                target_dir / "checkpoint_best.pt"
+            ),
             "equivalent_training_source": proof["source_config"],
             "independent_replication": False,
+            "equivalence_materialized_at": proof["created_at"],
         }
     )
     (target_dir / "train_result.json").write_text(
@@ -199,19 +231,24 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
         encoding="utf-8",
     )
     split = load_split_manifest(Path(target.split_manifest))
+    materialization_runtime = asdict(
+        runtime_manifest(
+            target,
+            phase="train_validation_equivalent_reuse",
+            split_hash=split["split_hash"],
+        )
+    )
+    source_run_manifest = json.loads(
+        (source_dir / "run_manifest.json").read_text(encoding="utf-8")
+    )
     run_manifest = {
-        "schema_version": 1,
-        "created_at": now(),
+        **source_run_manifest,
         "phase": "train_validation_equivalent_reuse",
         "experiment_id": target.experiment_id,
         "config_hash": target.config_hash,
-        "split_hash": split["split_hash"],
-        "dataset": target.dataset,
-        "model": target.model,
-        "seed": target.seed,
-        "time_steps": target.time_steps,
         "condition": asdict(target.condition),
         "equivalence_provenance": proof,
+        "materialization_runtime": materialization_runtime,
     }
     (target_dir / "run_manifest.json").write_text(
         json.dumps(run_manifest, indent=2, sort_keys=True) + "\n",
@@ -242,6 +279,7 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
         source_dir / f"confusion_{source_hash}.npy",
         target_dir / f"confusion_{output_hash}.npy",
     )
+    evaluation_manifest_path = target_dir / "evaluation_manifests" / f"{output_hash}.json"
     payload = dict(source_clean)
     payload.update(
         {
@@ -250,8 +288,12 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
             "condition": target.condition.name,
             "severity": target.condition.severity,
             "draw": target.condition.draw,
-            "evaluated_at": now(),
+            "evaluated_at": source_clean["evaluated_at"],
+            "equivalence_materialized_at": now(),
             "per_sample_path": str(target_samples.relative_to(PROJECT)),
+            "checkpoint": str((target_dir / "checkpoint_best.pt").relative_to(PROJECT)),
+            "checkpoint_sha256": file_sha256(target_dir / "checkpoint_best.pt"),
+            "evaluation_manifest_path": str(evaluation_manifest_path.relative_to(PROJECT)),
             "equivalent_evaluation_source": proof["source_config"],
             "independent_replication": False,
         }
@@ -260,19 +302,100 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
         json.dumps(payload, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    (target_dir / "test_evaluation_ledger.jsonl").write_text(
-        json.dumps(
-            {
-                "evaluation_key": evaluation_key(target),
-                "evaluated_at": payload["evaluated_at"],
-                "checkpoint_epoch": payload["checkpoint_epoch"],
-                "split_hash": split["split_hash"],
-                "equivalent_evaluation_source": proof["source_config"],
-            },
-            sort_keys=True,
+    materialization_evaluation_runtime = asdict(
+        runtime_manifest(
+            target,
+            phase="locked_test_evaluation_equivalent_reuse",
+            split_hash=split["split_hash"],
         )
-        + "\n",
+    )
+    source_evaluation_manifest_path = source_clean.get("evaluation_manifest_path")
+    if source_evaluation_manifest_path:
+        source_evaluation_manifest_path = Path(source_evaluation_manifest_path)
+        if not source_evaluation_manifest_path.is_absolute():
+            source_evaluation_manifest_path = PROJECT / source_evaluation_manifest_path
+    if source_evaluation_manifest_path and source_evaluation_manifest_path.is_file():
+        source_evaluation_manifest = json.loads(
+            source_evaluation_manifest_path.read_text(encoding="utf-8")
+        )
+        source_evaluation_manifest.pop("manifest_hash", None)
+    else:
+        source_evaluation_manifest = {
+            key: source_run_manifest.get(key)
+            for key in (
+                "schema_version",
+                "created_at",
+                "git_commit",
+                "git_dirty",
+                "python",
+                "torch",
+                "cuda",
+                "device",
+            )
+        }
+    evaluation_manifest = {
+        **source_evaluation_manifest,
+        "phase": "locked_test_evaluation_equivalent_reuse",
+        "experiment_id": target.experiment_id,
+        "config_hash": target.config_hash,
+        "split_hash": split["split_hash"],
+        "dataset": target.dataset,
+        "model": target.model,
+        "seed": target.seed,
+        "time_steps": target.time_steps,
+        "condition": asdict(target.condition),
+    }
+    evaluation_manifest.update(
+        {
+            "evaluation_key": evaluation_key(target),
+            "evaluation_config_hash": target.config_hash,
+            "training_config_hash": payload["training_config_hash"],
+            "checkpoint": payload["checkpoint"],
+            "checkpoint_sha256": payload["checkpoint_sha256"],
+            "checkpoint_epoch": payload["checkpoint_epoch"],
+            "selection_split": payload["selection_split"],
+            "selection_metric": payload["selection_metric"],
+            "selection_value": payload["selection_value"],
+            "test_evaluated_at": payload["evaluated_at"],
+            "equivalence_provenance": proof,
+            "materialization_runtime": materialization_evaluation_runtime,
+            "source_evaluation_manifest": (
+                str(source_evaluation_manifest_path.relative_to(PROJECT))
+                if source_evaluation_manifest_path
+                and source_evaluation_manifest_path.is_file()
+                else None
+            ),
+            "artifacts": {
+                "per_sample_path": payload["per_sample_path"],
+                "per_sample_sha256": file_sha256(target_samples),
+                "confusion_path": str(
+                    (target_dir / f"confusion_{output_hash}.npy").relative_to(PROJECT)
+                ),
+                "confusion_sha256": file_sha256(
+                    target_dir / f"confusion_{output_hash}.npy"
+                ),
+                "metrics_payload_sha256": stable_hash(payload),
+            },
+        }
+    )
+    evaluation_manifest["manifest_hash"] = stable_hash(evaluation_manifest)
+    evaluation_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    evaluation_manifest_path.write_text(
+        json.dumps(evaluation_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+    ledger_row = {
+        "evaluation_key": evaluation_key(target),
+        "evaluated_at": payload["evaluated_at"],
+        "checkpoint_epoch": payload["checkpoint_epoch"],
+        "checkpoint_sha256": payload["checkpoint_sha256"],
+        "split_hash": split["split_hash"],
+        "evaluation_manifest_path": str(evaluation_manifest_path.relative_to(PROJECT)),
+        "evaluation_manifest_hash": evaluation_manifest["manifest_hash"],
+        "equivalent_evaluation_source": proof["source_config"],
+    }
+    (target_dir / "test_evaluation_ledger.jsonl").write_text(
+        json.dumps(ledger_row, sort_keys=True) + "\n", encoding="utf-8"
     )
     return {"target": str(target_path.relative_to(PROJECT)), "source": proof["source_config"]}
 

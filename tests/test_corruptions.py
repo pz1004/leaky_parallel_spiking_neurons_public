@@ -94,6 +94,40 @@ class CorruptionTests(unittest.TestCase):
             np.testing.assert_allclose(renorm_frames.numpy(), plain_frames.numpy() * 4.0)
             self.assertEqual(len(list((root / "cache").rglob("*.npz"))), 1)
 
+    def test_sensor_corruption_cache_is_shared_across_models(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "split.json"
+            prepare_split_manifest("synthetic", root, manifest_path)
+            values = {
+                "schema_version": 1,
+                "experiment_id": "sensor_cache",
+                "dataset": "synthetic",
+                "model": "psn",
+                "seed": 42,
+                "time_steps": 8,
+                "data_root": str(root),
+                "split_manifest": str(manifest_path),
+                "image_size": 32,
+                "batch_size": 1,
+                "effective_batch_size": 1,
+                "cache_frames": True,
+                "frame_cache_root": str(root / "cache"),
+                "condition": {
+                    "name": "event_dropout",
+                    "severity": 0.3,
+                    "draw": 4,
+                },
+            }
+            psn = ExperimentConfig.from_mapping(values)
+            lpsn = replace(psn, model="lpsn_a1_lif_init", seed=1024)
+            psn_dataset, _ = build_dataset(psn, "test")
+            lpsn_dataset, _ = build_dataset(lpsn, "test")
+            first = psn_dataset[0][0]
+            second = lpsn_dataset[0][0]
+            np.testing.assert_array_equal(first.numpy(), second.numpy())
+            self.assertEqual(len(list((root / "cache").rglob("*.npz"))), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
