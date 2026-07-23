@@ -11,10 +11,17 @@ from dataclasses import replace
 
 from experiments.config import ConditionConfig, ExperimentConfig
 from experiments.data import build_dataset, load_split_manifest, prepare_split_manifest
-from experiments.cli import command_analyze
+from experiments.cli import _exact_signed_rank, command_analyze
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_exact_signed_rank_uses_seed_level_granularity(self) -> None:
+        result = _exact_signed_rank([0.1, 0.2, 0.3, 0.4, 0.5])
+        self.assertEqual(result["wilcoxon_nonzero_seed_means"], 5)
+        self.assertEqual(result["wilcoxon_w_plus"], 15.0)
+        self.assertEqual(result["wilcoxon_p_greater_raw"], 1 / 32)
+        self.assertEqual(result["wilcoxon_p_two_sided_raw"], 1 / 16)
+
     def test_synthetic_manifest_is_disjoint_and_hashed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "split.json"

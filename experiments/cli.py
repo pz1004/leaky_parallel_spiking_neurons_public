@@ -496,6 +496,92 @@ def _bootstrap_interval(rows: list[dict[str, Any]], metric: str, seed: int = 202
     return float(low), float(high)
 
 
+def _exact_signed_rank(values: list[float]) -> dict[str, float | int]:
+    nonzero = np.asarray(
+        [float(value) for value in values if not math.isclose(float(value), 0.0, abs_tol=1e-15)],
+        dtype=np.float64,
+    )
+    count = len(nonzero)
+    if count == 0:
+        return {
+            "wilcoxon_nonzero_seed_means": 0,
+            "wilcoxon_w_plus": 0.0,
+            "wilcoxon_p_greater_raw": 1.0,
+            "wilcoxon_p_two_sided_raw": 1.0,
+        }
+    absolute = np.abs(nonzero)
+    order = np.argsort(absolute, kind="stable")
+    ranks = np.empty(count, dtype=np.float64)
+    start = 0
+    while start < count:
+        stop = start + 1
+        while stop < count and math.isclose(
+            float(absolute[order[stop]]),
+            float(absolute[order[start]]),
+            rel_tol=0.0,
+            abs_tol=1e-15,
+        ):
+            stop += 1
+        average_rank = ((start + 1) + stop) / 2.0
+        ranks[order[start:stop]] = average_rank
+        start = stop
+    observed = float(ranks[nonzero > 0].sum())
+    total = float(ranks.sum())
+    possibilities = np.asarray(
+        [
+            sum(ranks[index] for index in range(count) if mask & (1 << index))
+            for mask in range(1 << count)
+        ],
+        dtype=np.float64,
+    )
+    greater = float(np.mean(possibilities >= observed - 1e-15))
+    distance = abs(observed - total / 2.0)
+    two_sided = float(
+        np.mean(np.abs(possibilities - total / 2.0) >= distance - 1e-15)
+    )
+    return {
+        "wilcoxon_nonzero_seed_means": count,
+        "wilcoxon_w_plus": observed,
+        "wilcoxon_p_greater_raw": greater,
+        "wilcoxon_p_two_sided_raw": min(1.0, two_sided),
+    }
+
+
+def _paired_test_family(row: dict[str, Any]) -> str:
+    experiment = str(row["experiment_id"])
+    condition = str(row["condition"])
+    if experiment == "temporal_native" and condition == "clean":
+        return "temporal_native_clean_models_vs_psn"
+    if experiment == "hardvs_main" and condition == "clean":
+        return "hardvs_main_models_vs_psn"
+    if experiment.startswith("density_sparsity"):
+        return "density_sparsity_models_vs_psn"
+    if condition in {
+        "event_dropout",
+        "background_activity",
+        "polarity_flip",
+        "temporal_jitter",
+        "packet_loss",
+        "hot_pixels",
+    }:
+        return "sensor_corruption_models_vs_psn"
+    return "temporal_diagnostic_models_vs_psn"
+
+
+def _holm_adjust(rows: list[dict[str, Any]], raw_field: str, output_field: str) -> None:
+    families: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        families.setdefault(str(row["test_family"]), []).append(index)
+    for indices in families.values():
+        ordered = sorted(indices, key=lambda index: float(rows[index][raw_field]))
+        running = 0.0
+        total = len(ordered)
+        for rank, index in enumerate(ordered):
+            adjusted = min(1.0, (total - rank) * float(rows[index][raw_field]))
+            running = max(running, adjusted)
+            rows[index][output_field] = running
+
+
 def command_analyze(args: argparse.Namespace) -> int:
     rows: list[dict[str, Any]] = []
     for path in sorted(args.runs_root.rglob("locked_test_metrics.jsonl")):
@@ -683,6 +769,7 @@ def command_analyze(args: argparse.Namespace) -> int:
             "n_seeds": len({row["seed"] for row in selected}),
             "n_draws": len({row["draw"] for row in selected}),
         }
+        result["test_family"] = _paired_test_family(result)
         for metric in ("accuracy_delta", "macro_f1_delta"):
             values = np.asarray([float(row[metric]) for row in selected])
             low, high = _bootstrap_interval(selected, metric)
@@ -695,8 +782,43 @@ def command_analyze(args: argparse.Namespace) -> int:
             result[f"{metric}_wins"] = int(np.sum(values > 0))
             result[f"{metric}_ties"] = int(np.sum(values == 0))
             result[f"{metric}_losses"] = int(np.sum(values < 0))
+            seed_means = [
+                float(
+                    np.mean(
+                        [
+                            row[metric]
+                            for row in selected
+                            if int(row["seed"]) == seed
+                        ]
+                    )
+                )
+                for seed in sorted({int(row["seed"]) for row in selected})
+            ]
+            result[f"{metric}_seed_mean_wins"] = int(
+                np.sum(np.asarray(seed_means) > 0)
+            )
+            result[f"{metric}_seed_mean_ties"] = int(
+                np.sum(np.asarray(seed_means) == 0)
+            )
+            result[f"{metric}_seed_mean_losses"] = int(
+                np.sum(np.asarray(seed_means) < 0)
+            )
+            signed_rank = _exact_signed_rank(seed_means)
+            for field, value in signed_rank.items():
+                result[f"{metric}_{field}"] = value
         paired_rows.append(result)
     if paired_rows:
+        for metric in ("accuracy_delta", "macro_f1_delta"):
+            _holm_adjust(
+                paired_rows,
+                f"{metric}_wilcoxon_p_greater_raw",
+                f"{metric}_wilcoxon_p_greater_holm",
+            )
+            _holm_adjust(
+                paired_rows,
+                f"{metric}_wilcoxon_p_two_sided_raw",
+                f"{metric}_wilcoxon_p_two_sided_holm",
+            )
         paired_path = args.output.with_name(args.output.stem + "_paired.csv")
         with paired_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(paired_rows[0]))
@@ -828,6 +950,11 @@ def command_analyze(args: argparse.Namespace) -> int:
         "training_rows": len(training_rows),
         "training_groups": len(training_summaries),
         "bootstrap": "hierarchical seed then within-seed draw resampling, 2000 replicates",
+        "paired_tests": (
+            "Exact signed-rank tests on per-seed mean paired deltas; zero "
+            "differences dropped; raw greater and two-sided p-values with "
+            "Holm adjustment within the declared test_family."
+        ),
     }
     aggregate_manifest["manifest_hash"] = stable_hash(aggregate_manifest)
     write_json(args.output.with_suffix(".manifest.json"), aggregate_manifest)
