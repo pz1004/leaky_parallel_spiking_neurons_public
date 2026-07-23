@@ -182,6 +182,18 @@ def main() -> int:
                     "source_deviation": integrity.get("source_deviation"),
                     "archive_md5": integrity.get("archive_md5"),
                     "archive_sha256": integrity.get("archive_sha256"),
+                    "acquisition_record_hash": integrity.get(
+                        "acquisition_record_hash"
+                    ),
+                    "preparation_git_commit": integrity.get(
+                        "preparation_git_commit"
+                    ),
+                    "preparation_git_dirty": integrity.get(
+                        "preparation_git_dirty"
+                    ),
+                    "preparation_script_sha256": integrity.get(
+                        "preparation_script_sha256"
+                    ),
                     "effective_counts": integrity.get("effective_counts"),
                     "excluded_sample_ids": integrity.get("excluded_sample_ids"),
                 },

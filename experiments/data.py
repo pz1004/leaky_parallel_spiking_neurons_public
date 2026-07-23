@@ -184,6 +184,18 @@ def prepare_split_manifest(dataset: str, data_root: Path, output: Path, *, seed:
             "source_deviation": integrity["source_deviation"],
             "archive_md5": integrity["archive"]["md5"],
             "archive_sha256": integrity["archive"]["sha256"],
+            "acquisition_record_hash": integrity["archive"][
+                "acquisition_record_hash"
+            ],
+            "preparation_git_commit": integrity["preparation_runtime"][
+                "git_commit"
+            ],
+            "preparation_git_dirty": integrity["preparation_runtime"][
+                "git_dirty"
+            ],
+            "preparation_script_sha256": integrity["preparation_runtime"][
+                "script_sha256"
+            ],
             "effective_counts": integrity["splits"]["effective_counts"],
             "excluded_sample_ids": integrity["splits"]["excluded_sample_ids"],
         }
@@ -249,6 +261,8 @@ def validate_split_manifest(manifest: dict[str, Any]) -> None:
             and len(integrity.get("excluded_sample_ids", [])) != 6
         ):
             raise ValueError("Known-mirror HARDVS mode must record six exclusions")
+        if bool(integrity.get("preparation_git_dirty")):
+            raise ValueError("HARDVS was prepared from a dirty tracked source tree")
 
 
 def load_split_manifest(path: Path) -> dict[str, Any]:
