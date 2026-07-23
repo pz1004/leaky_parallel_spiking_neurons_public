@@ -1,112 +1,225 @@
 # Leaky-Parallel Spiking Neurons (LP-SN)
 
-This folder contains only the reusable LP-SN logic intended for public
-disclosure. It excludes manuscript files, run outputs, datasets, checkpoints,
-and analysis scripts.
+This artifact contains the LP-SN implementation and the complete, config-driven
+pipeline for the reviewer-remediation experiments. Training, validation-based
+selection, locked-test evaluation, perturbation generation, temporal analysis,
+benchmarking, and result aggregation are all executable from this repository.
+
+Datasets, trained checkpoints, and bulky raw run logs are not redistributed.
+The small split manifests and declarative study specification are included.
 
 ## Contents
 
-- `lpsn_neuron.py`: the `LPSpikingNeuron` module and kernel/reset helpers.
-- `lpsn_variants.py`: named A1-A5 variant configurations and a construction helper.
-- `__init__.py`: package exports for convenient imports.
-- `requirements.txt`: manuscript runtime dependency pins.
-- `environment.yml`: conda environment matching the recorded manuscript profile.
-- `check_reproducibility.py`: lightweight runtime-version checker.
+- `lpsn_neuron.py` and `lpsn_variants.py`: reusable LP-SN implementation and named A1--A5 variants.
+- `experiments/`: dataset, model-adapter, training, evaluation, corruption, temporal-influence, and analysis code.
+- `configs/studies.yml`: the complete 695-run training matrix for the new studies.
+- `configs/reproduction.yml`: named end-to-end reproduction targets.
+- `manifests/`: deterministic CIFAR10-DVS and subject-disjoint DVS-Gesture split manifests.
+- `tests/`: split, corruption, native-length, and model-adapter tests.
+- `requirements.txt` and `environment.yml`: pinned runtime definitions.
 
-## Installation
+## Environment
 
-The manuscript runs used Python 3.12, PyTorch 2.10.0, torchvision 0.25.0,
-CUDA 12.8, cuDNN 91002, and SpikingJelly from commit `9b87d38`.
-
-For a conda-style setup:
+The recorded environment uses Python 3.12, PyTorch 2.10.0, torchvision 0.25.0,
+CUDA 12.8, and SpikingJelly commit `9b87d38`.
 
 ```bash
 conda env create -f environment.yml
 conda activate lpsn-manuscript
-```
-
-For a pip-style setup, install a CUDA-compatible PyTorch wheel for your
-platform if the default wheel is not suitable, then install:
-
-```bash
-pip install -r requirements.txt
-```
-
-Check the active runtime with:
-
-```bash
 python check_reproducibility.py
+python -m unittest discover -v tests
 ```
 
-## Minimal Usage
+Run all commands below from this directory.
+
+## Dataset Preparation
+
+Place the datasets below the chosen data root without changing their official
+test assignments:
+
+```text
+data/
+  CIFAR10DVS/events_np/<class>/*.npz
+  DVSGesture/download/ibmGestureTrain/<subject_condition>/*.npy
+  DVSGesture/download/ibmGestureTest/<subject_condition>/*.npy
+  HARDVS/raw/{train,val,test}/action_<id>/*.npz
+```
+
+HARDVS is not bundled and must be acquired under its own terms. Its published
+train, validation, and test partitions are preserved. CIFAR10-DVS keeps the
+TEBN test assignment and takes a deterministic class-stratified validation
+subset from training. DVS-Gesture keeps the official test assignment and uses
+a subject-disjoint validation subset from training.
+
+For environments that cannot use the official Baidu client, the integrity
+manifest records a public, chunked third-party mirror of the
+244,899,036,166-byte compact-event archive. The acquisition command resumes
+partial chunks, verifies all 23 mirror SHA-256 digests, verifies the published
+SpikingJelly label-file MD5 digests, and checks the combined ZIP central
+directory:
+
+```bash
+python scripts/acquire_hardvs.py --output ../data/HARDVS/download --workers 8
+python scripts/prepare_hardvs.py --download ../data/HARDVS/download \
+  --data-root ../data
+```
+
+The downloader does not redistribute data from this repository. Users remain
+responsible for the dataset terms and should prefer the original provider when
+its client is available. The preparation command performs ZIP CRC checks,
+validates the published label digests and disjointness, creates only symlinks
+in `HARDVS/raw/{train,val,test}`, and removes the verified source archive after
+successful extraction unless `--keep-archive` is given.
+
+Generate or verify manifests:
+
+```bash
+python -m experiments.cli prepare --dataset cifar10_dvs --data-root ../data \
+  --output manifests/cifar10_dvs.json
+python -m experiments.cli prepare --dataset dvs_gesture --data-root ../data \
+  --output manifests/dvs_gesture.json
+python -m experiments.cli prepare --dataset hardvs --data-root ../data \
+  --output manifests/hardvs.json
+```
+
+Each manifest contains sample identifiers, labels, split membership, and a
+content hash. Dataset paths remain relative and the datasets themselves are not
+included.
+
+## Locked Evaluation Protocol
+
+Training never constructs a test dataset. It selects checkpoints using
+validation macro-F1, with validation accuracy as the prespecified tie-breaker:
+
+```bash
+python -m experiments.cli train --config generated_configs/<study>/<dataset>/<model>/T<steps>/seed_<seed>.yml
+```
+
+The separately invoked evaluation command loads only the selected checkpoint.
+Every `(condition, severity, draw)` is recorded in an append-only ledger and a
+duplicate locked-test evaluation is rejected:
+
+```bash
+python -m experiments.cli evaluate --config <config.yml>
+```
+
+Run manifests record the configuration, split and source hashes, environment,
+checkpoint epoch, and selection rule. Per-layer firing activity, macro metrics,
+latency, throughput, and peak allocated CUDA memory are machine-readable.
+
+## Full Study Matrix
+
+Expand the committed declarative matrix after preparing all manifests:
+
+```bash
+python -m experiments.expand_matrix \
+  --spec configs/studies.yml \
+  --data-root ../data \
+  --manifests-root manifests \
+  --output generated_configs
+```
+
+The matrix specifies:
+
+- Full HARDVS at `T=16` for LIF, PSN, masked PSN, sliding PSN, RPSU, LP-SN A1, and LP-SN A2.
+- Native retraining at `T = 8, 16, 32, 64` on CIFAR10-DVS, DVS-Gesture, and HARDVS.
+- Matched retraining for raw-event density, temporal sparsity, amplitude-only controls, and mass-renormalized thinning.
+- The matched seeds `42, 123, 256, 512, 1024`.
+
+For the full matrix, use the resumable cache-aware scheduler rather than
+manually invoking 695 commands:
+
+```bash
+python scripts/run_study_matrix.py --workers 4
+```
+
+The scheduler precomputes lossless float32 frame caches once per raw-event
+condition, runs matched models against the same cache, removes a cache only
+after its whole group succeeds, and resumes from completed run ledgers.
+Severity-1 thinning, renormalized thinning, amplitude scaling, and temporal
+sparsity are mathematical identity conditions. Those cells, plus duplicate
+clean declarations shared by two studies, reuse one deterministic physical
+run with an `equivalence_provenance.json` record; they are not treated as
+independent replications.
+
+All event recordings are divided into equal-duration bins over their complete
+native duration. A model is reconstructed for each native `T`; fixed-length
+zero padding is not used as a sequence-length experiment.
+
+## Robustness and Temporal Analyses
+
+Generate the shared sensor-motivated corruption grid and evaluate ten draws per
+non-clean condition:
+
+```bash
+python -m experiments.cli corrupt --output manifests/corruptions.json
+python -m experiments.cli evaluate-grid --config <clean-T32-config.yml> \
+  --manifest manifests/corruptions.json --skip-completed
+```
+
+The committed named grids can be used instead of the generated JSON manifest,
+for example `--manifest configs/evaluation_grids.yml --grid robustness`.
+
+The grid covers event dropout, background activity, polarity flips, timestamp
+jitter, contiguous packet loss, and hot-pixel bursts at three severities. The
+same sample/condition/draw seed is used for every model. These are explicitly
+sensor-motivated synthetic corruptions, not a calibrated physical-sensor model.
+
+Temporal input influence and the fixed hardware benchmark are separate:
+
+```bash
+python -m experiments.cli temporal-influence --config <config.yml> \
+  --output <influence.json>
+python -m experiments.cli benchmark --config <config.yml> \
+  --warmup 100 --iterations 500 --output <benchmark.json>
+```
+
+Use `evaluate --condition causal_prefix --severity 0.25`, `0.50`, `0.75`, and
+`1.00` for causal-prefix curves, and `reverse` or `permute` for temporal-order
+controls.
+
+## Aggregation and Named Reproduction Targets
+
+```bash
+python -m experiments.cli analyze --runs-root runs_revision \
+  --output aggregates/results.csv
+python -m experiments.cli reproduce --matrix configs/reproduction.yml \
+  --target smoke --execute
+```
+
+Aggregation reports hierarchical bootstrap intervals by resampling training
+seeds and then corruption draws within seeds. Manuscript tables should be built
+only from these aggregates, never by manual transcription.
+
+## Controlled Comparator Scope
+
+PSN, masked PSN, and sliding PSN use the pinned SpikingJelly implementations.
+RPSU is an independent implementation of the published equations, with the
+official source revision recorded as
+`Brain-Cog-Lab/PSU@89fd724365cd4970cf3cf3802122c9fc22285a71`.
+All comparators use the same VGG-Small backbone and optimization protocol.
+Full sequence architectures such as P-SpikeSSM and SpikingSSMs are contextual
+references, not mislabeled drop-in neuron comparisons.
+
+## Minimal LP-SN Usage
 
 ```python
 import torch
-from lpsn_neuron import LPSpikingNeuron
-
-T = 16
-neuron = LPSpikingNeuron(
-    T=T,
-    init_tau=2.0,
-    learnable_kernel=False,
-    learnable_residual=False,
-    soft_reset_strategy="exact_detached",
-)
-
-x_seq = torch.randn(T, 32, 128)  # [time, batch, ...]
-s_seq = neuron(x_seq)
-```
-
-LP-SN expects multi-step input with time as the leading dimension:
-`[T, batch, ...]`. When SpikingJelly is installed, the module is configured
-with `step_mode = "m"` for activation-based multi-step networks.
-
-## Named Variants
-
-```python
 from lpsn_variants import build_lpsn_neuron
 
 neuron = build_lpsn_neuron(T=16, variant="a2")
+x_seq = torch.randn(16, 32, 128)  # [time, batch, ...]
+s_seq = neuron(x_seq)
 ```
 
-Core manuscript variants:
+## Release Scope
 
-| Variant | Description |
-| --- | --- |
-| `lpsn_a1_lif_init` | Frozen LIF-equivalent causal kernel, no residual. |
-| `lpsn_a2_soft` | A1 plus detached soft-reset correction. |
-| `lpsn_a3_kernel` | Learnable kernel scalars, no residual. |
-| `lpsn_a4` | Learnable kernel, causal residual, and temporal bias. |
-| `lpsn_a5_psn` | Dense residual PSN-recovery control. |
-
-By default, `available_variants()` returns only the manuscript A1-A5 variants.
-Pass `include_diagnostics=True` to include the A4a/A4b diagnostic controls.
-Each variant also records a `temporal_profile`: A2 uses
-`exact_detached_scan`, while no-reset and PSN-recovery variants use
-`dense_gemm`.
-
-Diagnostic variants:
-
-| Variant | Description |
-| --- | --- |
-| `lpsn_a4a_frozen_bias` | A4 with frozen temporal bias. |
-| `lpsn_a4b_frozen_kernel` | A4 with frozen kernel scalars. |
-
-## Training Note
-
-For variants with a learnable residual, add the optional residual penalty to
-your task loss:
-
-```python
-reg = sum(
-    module.regularization_loss()
-    for module in model.modules()
-    if hasattr(module, "regularization_loss")
-)
-loss = task_loss + reg
-```
+The release package includes complete code, configurations, split/corruption
+manifests, and tests, and it generates lightweight aggregate-table inputs. It
+intentionally excludes licensed datasets, checkpoints, and bulky raw logs.
+Consequently it is code-complete but not a pretrained-artifact archive; the
+manuscript and response letter must describe that distinction exactly.
 
 ## Citation
 
-If this public release accompanies a paper, add the final citation here before
-publishing.
+Add the final paper citation and immutable release DOI before publication.

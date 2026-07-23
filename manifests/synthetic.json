@@ -1,0 +1,689 @@
+{
+  "created_at": "2026-07-23T02:47:46.458225+00:00",
+  "data_root": ".",
+  "data_root_note": "Paths are relative to ExperimentConfig.data_root; datasets are not redistributed.",
+  "dataset": "synthetic",
+  "schema_version": 1,
+  "split_hash": "a7b84b7ab85eb297748b167deaff8bd47f80a07cdae0e7ba41a8c5f68cd92a4c",
+  "split_seed": 20240723,
+  "splits": {
+    "test": [
+      {
+        "group": "",
+        "id": "synthetic/test/0000",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0001",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0002",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0003",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0004",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0005",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0006",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0007",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0008",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0009",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0010",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0011",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0012",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0013",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0014",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0015",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0016",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0017",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0018",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0019",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0020",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0021",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0022",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/test/0023",
+        "label": 3,
+        "path": null
+      }
+    ],
+    "train": [
+      {
+        "group": "",
+        "id": "synthetic/train/0000",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0001",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0002",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0003",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0004",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0005",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0006",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0007",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0008",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0009",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0010",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0011",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0012",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0013",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0014",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0015",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0016",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0017",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0018",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0019",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0020",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0021",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0022",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0023",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0024",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0025",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0026",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0027",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0028",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0029",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0030",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0031",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0032",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0033",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0034",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0035",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0036",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0037",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0038",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0039",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0040",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0041",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0042",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0043",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0044",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0045",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0046",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0047",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0048",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0049",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0050",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0051",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0052",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0053",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0054",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0055",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0056",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0057",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0058",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0059",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0060",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0061",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0062",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/train/0063",
+        "label": 3,
+        "path": null
+      }
+    ],
+    "val": [
+      {
+        "group": "",
+        "id": "synthetic/val/0000",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0001",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0002",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0003",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0004",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0005",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0006",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0007",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0008",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0009",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0010",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0011",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0012",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0013",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0014",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0015",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0016",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0017",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0018",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0019",
+        "label": 3,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0020",
+        "label": 0,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0021",
+        "label": 1,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0022",
+        "label": 2,
+        "path": null
+      },
+      {
+        "group": "",
+        "id": "synthetic/val/0023",
+        "label": 3,
+        "path": null
+      }
+    ]
+  }
+}

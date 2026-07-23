@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "description": "Integrity manifest for the 244,899,036,166-byte HARDVS compact-event ZIP linked by the official project. The mirror preserves the single Baidu object as 23 ordered binary chunks.",
+  "official_project": "https://github.com/Event-AHU/HARDVS",
+  "official_baidu_share": "https://pan.baidu.com/s/1iw214Aj5ugN-arhuxjmfOw?pwd=1234",
+  "mirror_repository": "pan7386/HARDVS",
+  "mirror_revision": "dacc5cd5e49b1188f964dbe2a8ece36a69ce38c8",
+  "archive_name": "MINIHARDVS_EVENT_files.zip",
+  "archive_size": 244899036166,
+  "archive_entries": 215721,
+  "npz_entries": 107710,
+  "uncompressed_bytes": 256909046844,
+  "parts": [
+    {"index": 0, "name": "MINIHARDVS_EVENT_files_part0.zip", "size": 10737418240, "sha256": "158b23c40b5c55f7dd57cf6e01aaf8e968da1a7229c85c8c4ba8bde1b5e5aaa6"},
+    {"index": 1, "name": "MINIHARDVS_EVENT_files_part1.zip", "size": 10737418240, "sha256": "11284b7d78d3d3e5f7a6e8dcffc41949fb852bb886d89d9dfcc56f3e5b73092a"},
+    {"index": 2, "name": "MINIHARDVS_EVENT_files_part2.zip", "size": 10737418240, "sha256": "7426affebb3698c4b874243b50ba6ea52abfb9f7321772e13ad4c25fa2e7d657"},
+    {"index": 3, "name": "MINIHARDVS_EVENT_files_part3.zip", "size": 10737418240, "sha256": "90a421c20f92a96c1f1d89e45c4e2e7a0eb94edd16deea9acb0e1fab83bb905f"},
+    {"index": 4, "name": "MINIHARDVS_EVENT_files_part4.zip", "size": 10737418240, "sha256": "422fa74a12a630fe4f4df68907362c7ddfcd2118b733c2b6c5eed6dcc6ee3869"},
+    {"index": 5, "name": "MINIHARDVS_EVENT_files_part5.zip", "size": 10737418240, "sha256": "9ba5fe507820292cdfb470c6831d446caf5e327a1b41060af39c4c08f0547f50"},
+    {"index": 6, "name": "MINIHARDVS_EVENT_files_part6.zip", "size": 10737418240, "sha256": "1ec8e34f03c1bab000573380ddd9e46f5eced0017385c87eb2bd5016a0166db1"},
+    {"index": 7, "name": "MINIHARDVS_EVENT_files_part7.zip", "size": 10737418240, "sha256": "707afb9fd0cd3d857ba6015543748869e0e183978389cd51d7b28ba6762f01d6"},
+    {"index": 8, "name": "MINIHARDVS_EVENT_files_part8.zip", "size": 10737418240, "sha256": "6737b77c331b2666848c505ae990e66b7fba10f495de94bd432150ef8774b7a0"},
+    {"index": 9, "name": "MINIHARDVS_EVENT_files_part9.zip", "size": 10737418240, "sha256": "a504b7db930fb24d7baaeb14f59d51540423c8517ce8bc0b8bdc85e456bf06d1"},
+    {"index": 10, "name": "MINIHARDVS_EVENT_files_part10.zip", "size": 10737418240, "sha256": "81150710bdb5f42e1140e96dec34ee5312352f67b9b221cda2d46895001822e9"},
+    {"index": 11, "name": "MINIHARDVS_EVENT_files_part11.zip", "size": 10737418240, "sha256": "04566ec06657b4266373c81b4f2e91e3027b7f33ef8b05c42ccc50e04fd1f698"},
+    {"index": 12, "name": "MINIHARDVS_EVENT_files_part12.zip", "size": 10737418240, "sha256": "9f57f6cbd4875553b5c6c9ee8db866d61fe0714ba011539761efa4d0bb4bf682"},
+    {"index": 13, "name": "MINIHARDVS_EVENT_files_part13.zip", "size": 10737418240, "sha256": "bba1b4c1e4d42c78e5ced6a97ed7abd6eca3cf8963b89d90da7766439dd5c792"},
+    {"index": 14, "name": "MINIHARDVS_EVENT_files_part14.zip", "size": 10737418240, "sha256": "1c21361b0b2439829e5ed0f5023ccee607b2932faef35bca146d88cf0190d182"},
+    {"index": 15, "name": "MINIHARDVS_EVENT_files_part15.zip", "size": 10737418240, "sha256": "8aaa33c7047b96c77fd61f0273b7daf1fc2ead9cfd700af220b25480eb0b8a19"},
+    {"index": 16, "name": "MINIHARDVS_EVENT_files_part16.zip", "size": 10737418240, "sha256": "2f50ed47ce3b17d5dd8f8dcb0152ddf11ac20017ac4d2580b43ce846ffe1d63f"},
+    {"index": 17, "name": "MINIHARDVS_EVENT_files_part17.zip", "size": 10737418240, "sha256": "e16d49c9667510b9ea55ef8fceab6f7a01c0302a5eff82d324d1a9837015bc9b"},
+    {"index": 18, "name": "MINIHARDVS_EVENT_files_part18.zip", "size": 10737418240, "sha256": "32103f1ff361effd17826e77e88df1e34e549fe780c3cf381096b63cf67fc8ff"},
+    {"index": 19, "name": "MINIHARDVS_EVENT_files_part19.zip", "size": 10737418240, "sha256": "cdf848a46f997a0e276278c200220de274fb1128176079933f804de4c0990321"},
+    {"index": 20, "name": "MINIHARDVS_EVENT_files_part20.zip", "size": 10737418240, "sha256": "ee1d05b34bcaaa03acaf28bb2a981a5ef03d185a6fa4f2f1eb6b7f341544ad4c"},
+    {"index": 21, "name": "MINIHARDVS_EVENT_files_part21.zip", "size": 10737418240, "sha256": "04e812cbb9519c67f205d5ede3ba21ae97d7be6caadf1cf022f6d1ddd3db2209"},
+    {"index": 22, "name": "MINIHARDVS_EVENT_files_part22.zip", "size": 8675834886, "sha256": "6efe9cc78157504f04a4a074dcd204b402da89a268c4717ca6ba03a36dcb0132"}
+  ],
+  "labels": [
+    {"name": "train_label.txt", "size": 2917961, "md5": "0d642b6e6871034f151b2649a89d8d3c", "sha256": "ea4fa2657752ad444b72e7f569c0a8ae93be774ef32862c370b7369e73e7c98e", "samples": 64526},
+    {"name": "val_label.txt", "size": 485408, "md5": "cd2cebcba80e4552102bbacf2b5df812", "sha256": "06fb69dab0564cd40d7161773350ab194b5f7b21dac6d55940678139bc3cf0a1", "samples": 10734},
+    {"name": "test_label.txt", "size": 1462259, "md5": "5b664af5843f9b476a9c22626f7f5a59", "sha256": "48327889317776f49e77cde4bcdf052027fb160d95507d835ab619c38e07d40e", "samples": 32386}
+  ]
+}

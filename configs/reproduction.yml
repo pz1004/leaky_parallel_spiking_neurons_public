@@ -1,0 +1,13 @@
+targets:
+  - name: smoke
+    commands:
+      - [python, -m, experiments.cli, prepare, --dataset, synthetic, --data-root, ., --output, manifests/synthetic.json]
+      - [python, -m, experiments.cli, train, --config, configs/smoke.yml]
+      - [python, -m, experiments.cli, evaluate, --config, configs/smoke.yml]
+      - [python, -m, experiments.cli, analyze, --runs-root, runs_revision_smoke, --output, aggregates/smoke.csv]
+  - name: prepare_real_splits
+    commands:
+      - [python, -m, experiments.cli, prepare, --dataset, cifar10_dvs, --data-root, ../data, --output, manifests/cifar10_dvs.json]
+      - [python, -m, experiments.cli, prepare, --dataset, dvs_gesture, --data-root, ../data, --output, manifests/dvs_gesture.json]
+      - [python, -m, experiments.cli, prepare, --dataset, hardvs, --data-root, ../data, --output, manifests/hardvs.json]
+      - [python, -m, experiments.expand_matrix, --spec, configs/studies.yml, --data-root, ../data, --manifests-root, manifests, --output, generated_configs]

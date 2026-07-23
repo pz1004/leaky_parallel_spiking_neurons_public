@@ -1,0 +1,34 @@
+grids:
+  robustness:
+    - {name: clean, severity: 0.0, draws: 1}
+    - {name: event_dropout, severity: 0.10, draws: 10}
+    - {name: event_dropout, severity: 0.30, draws: 10}
+    - {name: event_dropout, severity: 0.50, draws: 10}
+    - {name: background_activity, severity: 0.10, draws: 10}
+    - {name: background_activity, severity: 0.30, draws: 10}
+    - {name: background_activity, severity: 0.50, draws: 10}
+    - {name: polarity_flip, severity: 0.05, draws: 10}
+    - {name: polarity_flip, severity: 0.15, draws: 10}
+    - {name: polarity_flip, severity: 0.30, draws: 10}
+    - {name: temporal_jitter, severity: 0.005, draws: 10}
+    - {name: temporal_jitter, severity: 0.02, draws: 10}
+    - {name: temporal_jitter, severity: 0.05, draws: 10}
+    - {name: packet_loss, severity: 0.10, draws: 10}
+    - {name: packet_loss, severity: 0.25, draws: 10}
+    - {name: packet_loss, severity: 0.40, draws: 10}
+    - {name: hot_pixels, severity: 0.10, draws: 10}
+    - {name: hot_pixels, severity: 0.30, draws: 10}
+    - {name: hot_pixels, severity: 0.50, draws: 10}
+  temporal_order:
+    - {name: reverse, severity: 1.0, draws: 1}
+    - {name: permute, severity: 1.0, draws: 10}
+  causal_prefix:
+    - {name: causal_prefix, severity: 0.25, draws: 1}
+    - {name: causal_prefix, severity: 0.50, draws: 1}
+    - {name: causal_prefix, severity: 0.75, draws: 1}
+    - {name: causal_prefix, severity: 1.00, draws: 1}
+  temporal_sparsity_draws:
+    - {name: temporal_sparse, severity: 0.25, draws: 10}
+    - {name: temporal_sparse, severity: 0.50, draws: 10}
+    - {name: temporal_sparse, severity: 0.75, draws: 10}
+    - {name: temporal_sparse, severity: 1.00, draws: 10}

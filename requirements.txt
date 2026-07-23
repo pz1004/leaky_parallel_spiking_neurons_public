@@ -1,5 +1,9 @@
-# Manuscript runtime pins. Install a CUDA-compatible PyTorch wheel/index for
-# your platform if the default PyPI wheel is not suitable.
-torch==2.10.0
-torchvision==0.25.0
-spikingjelly @ git+https://github.com/fangwei123456/spikingjelly.git@9b87d38
+# Manuscript runtime pins. The explicit CUDA 12.8 wheel index avoids resolving
+# a CPU-only build or a nonexistent pytorch-cuda=12.8 conda metapackage.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
+torchaudio==2.10.0+cu128
+spikingjelly @ https://github.com/fangwei123456/spikingjelly/archive/9b87d38e247a19e42ab9138aa1c70db297a0576a.zip#sha256=156a166fe3cf37785930207408789d9d9e80f980043323fbb082693c1688b7e2
+numpy==2.2.6
+PyYAML==6.0.2

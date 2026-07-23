@@ -32,6 +32,7 @@ EXPECTED = {
     "cudnn": "91002",
 }
 EXPECTED_SPIKINGJELLY_COMMIT = "9b87d38"
+EXPECTED_SPIKINGJELLY_ARCHIVE_SHA256 = "156a166fe3cf37785930207408789d9d9e80f980043323fbb082693c1688b7e2"
 
 
 def module_version(name: str) -> str:
@@ -42,8 +43,14 @@ def module_version(name: str) -> str:
     return str(getattr(module, "__version__", "unknown"))
 
 
-def spikingjelly_commit() -> str:
-    """Return the installed SpikingJelly git commit when metadata exposes it."""
+def spikingjelly_revision() -> tuple[str, str]:
+    """Return the installed SpikingJelly commit and archive hash.
+
+    A PEP 610 ``direct_url.json`` record stores VCS metadata for a git
+    install and archive metadata for an immutable source-archive install.
+    The latter has no ``.git`` directory, so recover its full commit from the
+    pinned archive URL and verify the recorded source hash separately.
+    """
     try:
         dist = metadata.distribution("spikingjelly")
         for file in dist.files or []:
@@ -51,7 +58,14 @@ def spikingjelly_commit() -> str:
                 direct_url = json.loads(dist.locate_file(file).read_text(encoding="utf-8"))
                 commit = direct_url.get("vcs_info", {}).get("commit_id")
                 if commit:
-                    return str(commit)
+                    return str(commit), "vcs"
+                url = str(direct_url.get("url", ""))
+                archive_hashes = direct_url.get("archive_info", {}).get("hashes", {})
+                archive_hash = str(archive_hashes.get("sha256", "unknown"))
+                marker = "/archive/"
+                if marker in url:
+                    commit = url.split(marker, 1)[1].split(".", 1)[0]
+                    return commit, archive_hash
     except Exception:
         pass
 
@@ -68,12 +82,12 @@ def spikingjelly_commit() -> str:
                     timeout=5,
                 )
             except Exception as exc:
-                return f"unknown (git probe failed: {exc})"
+                return f"unknown (git probe failed: {exc})", "unknown"
             commit = result.stdout.strip()
             if result.returncode == 0 and commit:
-                return commit
-            return f"unknown (git probe failed: {result.stderr.strip()})"
-    return f"unknown (file {module_file})"
+                return commit, "vcs"
+            return f"unknown (git probe failed: {result.stderr.strip()})", "unknown"
+    return f"unknown (file {module_file})", "unknown"
 
 
 def collect_checks() -> list[Check]:
@@ -98,7 +112,16 @@ def collect_checks() -> list[Check]:
         checks.append(Check("cudnn", EXPECTED["cudnn"], f"unavailable ({exc})"))
 
     try:
-        checks.append(Check("spikingjelly_commit", EXPECTED_SPIKINGJELLY_COMMIT, spikingjelly_commit()))
+        spikingjelly_commit, spikingjelly_archive_hash = spikingjelly_revision()
+        checks.append(Check("spikingjelly_commit", EXPECTED_SPIKINGJELLY_COMMIT, spikingjelly_commit))
+        if spikingjelly_archive_hash != "vcs":
+            checks.append(
+                Check(
+                    "spikingjelly_archive_sha256",
+                    EXPECTED_SPIKINGJELLY_ARCHIVE_SHA256,
+                    spikingjelly_archive_hash,
+                )
+            )
     except Exception as exc:
         checks.append(Check("spikingjelly_commit", EXPECTED_SPIKINGJELLY_COMMIT, f"missing ({exc})"))
 

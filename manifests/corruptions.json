@@ -1,0 +1,105 @@
+{
+  "base_seed": 20240723,
+  "conditions": [
+    {
+      "draws": 1,
+      "name": "clean",
+      "severity": 0.0
+    },
+    {
+      "draws": 10,
+      "name": "event_dropout",
+      "severity": 0.1
+    },
+    {
+      "draws": 10,
+      "name": "event_dropout",
+      "severity": 0.3
+    },
+    {
+      "draws": 10,
+      "name": "event_dropout",
+      "severity": 0.5
+    },
+    {
+      "draws": 10,
+      "name": "background_activity",
+      "severity": 0.1
+    },
+    {
+      "draws": 10,
+      "name": "background_activity",
+      "severity": 0.3
+    },
+    {
+      "draws": 10,
+      "name": "background_activity",
+      "severity": 0.5
+    },
+    {
+      "draws": 10,
+      "name": "polarity_flip",
+      "severity": 0.05
+    },
+    {
+      "draws": 10,
+      "name": "polarity_flip",
+      "severity": 0.15
+    },
+    {
+      "draws": 10,
+      "name": "polarity_flip",
+      "severity": 0.3
+    },
+    {
+      "draws": 10,
+      "name": "temporal_jitter",
+      "severity": 0.005
+    },
+    {
+      "draws": 10,
+      "name": "temporal_jitter",
+      "severity": 0.02
+    },
+    {
+      "draws": 10,
+      "name": "temporal_jitter",
+      "severity": 0.05
+    },
+    {
+      "draws": 10,
+      "name": "packet_loss",
+      "severity": 0.1
+    },
+    {
+      "draws": 10,
+      "name": "packet_loss",
+      "severity": 0.25
+    },
+    {
+      "draws": 10,
+      "name": "packet_loss",
+      "severity": 0.4
+    },
+    {
+      "draws": 10,
+      "name": "hot_pixels",
+      "severity": 0.1
+    },
+    {
+      "draws": 10,
+      "name": "hot_pixels",
+      "severity": 0.3
+    },
+    {
+      "draws": 10,
+      "name": "hot_pixels",
+      "severity": 0.5
+    }
+  ],
+  "created_at": "2026-07-23T02:49:09.326910+00:00",
+  "manifest_hash": "a85da3c5ef48e4b4d0a16b0ccac93c58eb18b3914fb3d5c1cb5ba6f36f2afde3",
+  "note": "Sensor-motivated synthetic corruptions; not a calibrated physical-sensor noise model.",
+  "schema_version": 1,
+  "shared_across_models": true
+}
