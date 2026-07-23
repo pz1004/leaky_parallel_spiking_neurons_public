@@ -7,6 +7,7 @@ import json
 import os
 from collections import defaultdict
 from dataclasses import asdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,7 +25,7 @@ DATASET_META = {
     "hardvs": {"height": 260, "width": 346, "classes": 300},
 }
 PERTURBATION_NAMESPACE_SEED = 20240723
-FRAME_CACHE_SCHEMA = 2
+FRAME_CACHE_SCHEMA = 3
 
 
 def _record(sample_id: str, path: Path | None, label: int, group: str = "") -> dict[str, Any]:
@@ -479,6 +480,14 @@ def cache_source_condition(condition: ConditionConfig) -> ConditionConfig | None
     return None
 
 
+@lru_cache(maxsize=None)
+def _split_hash_for_cache(
+    resolved_path: str, size: int, modified_ns: int
+) -> str:
+    _ = (size, modified_ns)
+    return str(load_split_manifest(Path(resolved_path))["split_hash"])
+
+
 def frame_cache_namespace(
     config: ExperimentConfig, condition: ConditionConfig | None = None
 ) -> Path | None:
@@ -486,12 +495,20 @@ def frame_cache_namespace(
     source = cache_source_condition(selected)
     if not config.cache_frames or source is None:
         return None
+    split_manifest_path = Path(str(config.split_manifest)).resolve()
+    split_stat = split_manifest_path.stat()
+    split_hash = _split_hash_for_cache(
+        str(split_manifest_path),
+        split_stat.st_size,
+        split_stat.st_mtime_ns,
+    )
     seed = 0
     condition = f"{source.name}_{source.severity:.12g}_draw{source.draw}_seed{seed}"
     return (
         Path(str(config.frame_cache_root))
         / f"schema_v{FRAME_CACHE_SCHEMA}"
         / config.dataset
+        / f"split_{split_hash[:20]}"
         / f"T{config.time_steps}_S{config.image_size}"
         / condition
     )

@@ -8,7 +8,13 @@ import tempfile
 import numpy as np
 
 from experiments.config import ConditionConfig, ExperimentConfig
-from experiments.data import build_dataset, corrupt_events, events_to_frames, prepare_split_manifest
+from experiments.data import (
+    build_dataset,
+    corrupt_events,
+    events_to_frames,
+    frame_cache_namespace,
+    prepare_split_manifest,
+)
 
 
 def fixture_events(count: int = 100):
@@ -127,6 +133,35 @@ class CorruptionTests(unittest.TestCase):
             second = lpsn_dataset[0][0]
             np.testing.assert_array_equal(first.numpy(), second.numpy())
             self.assertEqual(len(list((root / "cache").rglob("*.npz"))), 1)
+
+    def test_frame_cache_namespace_is_bound_to_split_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_manifest = root / "first.json"
+            second_manifest = root / "second.json"
+            prepare_split_manifest("synthetic", root, first_manifest, seed=1)
+            prepare_split_manifest("synthetic", root, second_manifest, seed=2)
+            values = {
+                "schema_version": 1,
+                "experiment_id": "split_bound_cache",
+                "dataset": "synthetic",
+                "model": "psn",
+                "seed": 42,
+                "time_steps": 8,
+                "data_root": str(root),
+                "split_manifest": str(first_manifest),
+                "image_size": 32,
+                "batch_size": 1,
+                "effective_batch_size": 1,
+                "cache_frames": True,
+                "frame_cache_root": str(root / "cache"),
+            }
+            first = ExperimentConfig.from_mapping(values)
+            second = replace(first, split_manifest=str(second_manifest))
+            self.assertNotEqual(
+                frame_cache_namespace(first),
+                frame_cache_namespace(second),
+            )
 
 
 if __name__ == "__main__":
