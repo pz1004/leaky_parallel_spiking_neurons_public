@@ -126,6 +126,7 @@ def main() -> int:
     expected_diagnostics = diagnostic_keys(args.grids_manifest, grids)
     errors: list[str] = []
     warnings: list[str] = []
+    hardvs_sources: dict[str, dict[str, Any]] = {}
     stats: dict[str, int] = {
         "configs": 0,
         "complete_training_runs": 0,
@@ -171,6 +172,28 @@ def main() -> int:
         if config.smoke_samples > 0:
             test_count = min(test_count, config.smoke_samples)
         classes = int(DATASET_META[config.dataset]["classes"])
+        if config.dataset == "hardvs":
+            integrity = split.get("dataset_integrity", {})
+            hardvs_sources.setdefault(
+                str(split["split_hash"]),
+                {
+                    "split_hash": split["split_hash"],
+                    "integrity_mode": integrity.get("integrity_mode"),
+                    "source_deviation": integrity.get("source_deviation"),
+                    "archive_md5": integrity.get("archive_md5"),
+                    "archive_sha256": integrity.get("archive_sha256"),
+                    "effective_counts": integrity.get("effective_counts"),
+                    "excluded_sample_ids": integrity.get("excluded_sample_ids"),
+                },
+            )
+            if (
+                integrity.get("integrity_mode")
+                == "known_corrupt_mirror_exclusion"
+                and not integrity.get("source_deviation")
+            ):
+                errors.append(
+                    f"{label}: known-mirror HARDVS source deviation is not disclosed"
+                )
         required = (
             "config.yml",
             "environment.json",
@@ -389,6 +412,9 @@ def main() -> int:
         "required_diagnostic_grids": grids if args.require_diagnostics else [],
         "artifact_hashes_checked": not args.skip_artifact_hashes,
         "stats": stats,
+        "hardvs_sources": sorted(
+            hardvs_sources.values(), key=lambda row: row["split_hash"]
+        ),
         "errors": errors,
         "warnings": warnings,
         "status": "complete" if not errors else "incomplete",

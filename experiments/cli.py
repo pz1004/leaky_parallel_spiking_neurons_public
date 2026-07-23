@@ -827,6 +827,7 @@ def command_analyze(args: argparse.Namespace) -> int:
 
     class_counts: dict[tuple, list[int]] = {}
     strata_counts: dict[tuple, list[int]] = {}
+    pooled_clean_confusions: dict[tuple[Any, ...], np.ndarray] = {}
     for metric_row in rows:
         sample_path_value = metric_row.get("per_sample_path")
         if not sample_path_value:
@@ -846,6 +847,25 @@ def command_analyze(args: argparse.Namespace) -> int:
             counter = class_counts.setdefault(class_key, [0, 0])
             counter[0] += int(sample["prediction"] == sample["label"])
             counter[1] += 1
+        if metric_row["condition"] == "clean":
+            confusion_key = (
+                metric_row["experiment_id"],
+                metric_row["dataset"],
+                metric_row["model"],
+                metric_row["time_steps"],
+            )
+            matrix = pooled_clean_confusions.setdefault(
+                confusion_key,
+                np.zeros(
+                    (
+                        int(DATASET_META[metric_row["dataset"]]["classes"]),
+                        int(DATASET_META[metric_row["dataset"]]["classes"]),
+                    ),
+                    dtype=np.int64,
+                ),
+            )
+            for sample in samples_for_evaluation:
+                matrix[int(sample["label"]), int(sample["prediction"])] += 1
         for axis in ("event_count", "duration"):
             values = np.asarray([float(sample[axis]) for sample in samples_for_evaluation])
             edges = np.quantile(values, [0.25, 0.50, 0.75])
@@ -876,6 +896,40 @@ def command_analyze(args: argparse.Namespace) -> int:
                 writer = csv.DictWriter(handle, fieldnames=list(output_rows[0]))
                 writer.writeheader()
                 writer.writerows(output_rows)
+    confusion_rows: list[dict[str, Any]] = []
+    for key, matrix in sorted(pooled_clean_confusions.items()):
+        support = matrix.sum(axis=1)
+        for true_class, predicted_class in np.argwhere(matrix > 0):
+            count = int(matrix[true_class, predicted_class])
+            confusion_rows.append(
+                {
+                    **dict(
+                        zip(
+                            ("experiment_id", "dataset", "model", "time_steps"),
+                            key,
+                        )
+                    ),
+                    "true_class": int(true_class),
+                    "predicted_class": int(predicted_class),
+                    "count": count,
+                    "true_class_support": int(support[true_class]),
+                    "row_normalized_fraction": (
+                        count / int(support[true_class])
+                        if support[true_class]
+                        else 0.0
+                    ),
+                    "pooling_note": (
+                        "Predictions pooled across matched seeds; repeated "
+                        "test examples are correlated, not independent samples."
+                    ),
+                }
+            )
+    if confusion_rows:
+        path = args.output.with_name(args.output.stem + "_confusion_long.csv")
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(confusion_rows[0]))
+            writer.writeheader()
+            writer.writerows(confusion_rows)
 
     training_rows: list[dict[str, Any]] = []
     for path in sorted(args.runs_root.rglob("train_result.json")):
@@ -949,6 +1003,8 @@ def command_analyze(args: argparse.Namespace) -> int:
         "groups": len(summaries),
         "training_rows": len(training_rows),
         "training_groups": len(training_summaries),
+        "pooled_clean_confusion_groups": len(pooled_clean_confusions),
+        "pooled_clean_confusion_nonzero_cells": len(confusion_rows),
         "bootstrap": "hierarchical seed then within-seed draw resampling, 2000 replicates",
         "paired_tests": (
             "Exact signed-rank tests on per-seed mean paired deltas; zero "

@@ -30,6 +30,7 @@ sys.path.insert(0, str(PROJECT))
 from experiments.config import (  # noqa: E402
     ConditionConfig,
     ExperimentConfig,
+    file_sha256,
     load_config,
     stable_hash,
 )
@@ -397,6 +398,8 @@ def main() -> int:
             "time_steps": args.time_steps,
             "configs": len(selected),
             "grids": grids,
+            "grids_manifest": str(args.grids_manifest),
+            "grids_manifest_sha256": file_sha256(args.grids_manifest),
             "unique_grid_conditions": len(conditions),
             "benchmark_scope": args.benchmark_scope,
             "benchmark_configs": len(benchmark_selected),

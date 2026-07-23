@@ -16,6 +16,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 
 from experiments.config import file_sha256, load_config, stable_hash  # noqa: E402
+from experiments.data import DATASET_META, load_split_manifest  # noqa: E402
 
 
 def project_path(path: Path) -> Path:
@@ -98,9 +99,12 @@ def main() -> int:
     benchmarks: list[dict[str, Any]] = []
     influence_timesteps: list[dict[str, Any]] = []
     influence_horizons: list[dict[str, Any]] = []
+    dataset_characteristics: list[dict[str, Any]] = []
     sources: list[dict[str, str]] = []
+    split_paths: dict[str, Path] = {}
     for config_path in sorted(args.configs_root.rglob("*.yml")):
         config = load_config(config_path)
+        split_paths.setdefault(config.dataset, project_path(Path(config.split_manifest)))
         common = {
             "experiment_id": config.experiment_id,
             "dataset": config.dataset,
@@ -132,6 +136,45 @@ def main() -> int:
                     "sha256": file_sha256(benchmark_path),
                 }
             )
+
+    for dataset, split_path in sorted(split_paths.items()):
+        manifest = load_split_manifest(split_path)
+        class_count = int(DATASET_META[dataset]["classes"])
+        for split_name in ("train", "val", "test"):
+            counts = np.bincount(
+                [
+                    int(row["label"])
+                    for row in manifest["splits"][split_name]
+                ],
+                minlength=class_count,
+            ).astype(np.float64)
+            dataset_characteristics.append(
+                {
+                    "dataset": dataset,
+                    "split": split_name,
+                    "samples": int(counts.sum()),
+                    "classes": class_count,
+                    "samples_per_class_min": int(counts.min()),
+                    "samples_per_class_max": int(counts.max()),
+                    "samples_per_class_mean": float(counts.mean()),
+                    "samples_per_class_population_std": float(counts.std(ddof=0)),
+                    "samples_per_class_cv": (
+                        float(counts.std(ddof=0) / counts.mean())
+                        if counts.mean() > 0
+                        else 0.0
+                    ),
+                    "split_hash": manifest["split_hash"],
+                    "integrity_mode": manifest.get("dataset_integrity", {}).get(
+                        "integrity_mode"
+                    ),
+                }
+            )
+        sources.append(
+            {
+                "path": str(split_path.relative_to(PROJECT)),
+                "sha256": file_sha256(split_path),
+            }
+        )
         influence_path = run_dir(config) / "temporal_influence.json"
         if influence_path.is_file():
             payload = read_hashed(influence_path)
@@ -199,6 +242,10 @@ def main() -> int:
         args.output_root / "temporal_horizon_summary.csv",
         horizon_summary,
     )
+    write_csv(
+        args.output_root / "dataset_split_characteristics.csv",
+        dataset_characteristics,
+    )
     manifest = {
         "schema_version": 1,
         "benchmark_rows": len(benchmarks),
@@ -207,6 +254,7 @@ def main() -> int:
         "influence_groups": len(influence_summary),
         "horizon_rows": len(influence_horizons),
         "horizon_groups": len(horizon_summary),
+        "dataset_split_rows": len(dataset_characteristics),
         "bootstrap": "seed bootstrap, 2000 replicates",
         "sources": sorted(sources, key=lambda row: row["path"]),
     }
