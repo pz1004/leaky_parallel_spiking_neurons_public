@@ -142,6 +142,18 @@ epoch and SHA-256, selection rule, split hash, and hashes of its per-sample and
 confusion artifacts. Per-layer firing activity, macro metrics, latency,
 throughput, and peak allocated CUDA memory are machine-readable.
 
+For a completed run created before evaluation manifests were introduced,
+backfill hashes the already sealed checkpoint, per-sample rows, and confusion
+matrix without recomputing predictions, and labels the result explicitly:
+
+```bash
+python scripts/backfill_evaluation_manifests.py \
+  --runs-root runs_revision --dry-run
+python scripts/backfill_evaluation_manifests.py \
+  --runs-root runs_revision \
+  --output aggregates/evaluation_manifest_backfill.json
+```
+
 ## Full Study Matrix
 
 Expand the committed declarative matrix after preparing all manifests:
