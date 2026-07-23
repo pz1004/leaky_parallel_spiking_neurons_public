@@ -47,6 +47,7 @@ from .config import (
 )
 from .data import (
     DATASET_META,
+    FRAME_CACHE_SCHEMA,
     PERTURBATION_NAMESPACE_SEED,
     build_dataset,
     cache_source_condition,
@@ -129,6 +130,7 @@ def command_cache(args: argparse.Namespace) -> int:
         raise ValueError("This configuration does not have a cache source condition")
     marker_payload = {
         "schema_version": 1,
+        "frame_cache_schema": FRAME_CACHE_SCHEMA,
         "dataset": config.dataset,
         "time_steps": config.time_steps,
         "image_size": config.image_size,

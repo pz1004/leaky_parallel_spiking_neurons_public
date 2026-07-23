@@ -24,6 +24,7 @@ DATASET_META = {
     "hardvs": {"height": 260, "width": 346, "classes": 300},
 }
 PERTURBATION_NAMESPACE_SEED = 20240723
+FRAME_CACHE_SCHEMA = 2
 
 
 def _record(sample_id: str, path: Path | None, label: int, group: str = "") -> dict[str, Any]:
@@ -475,6 +476,7 @@ def frame_cache_namespace(
     condition = f"{source.name}_{source.severity:.12g}_draw{source.draw}_seed{seed}"
     return (
         Path(str(config.frame_cache_root))
+        / f"schema_v{FRAME_CACHE_SCHEMA}"
         / config.dataset
         / f"T{config.time_steps}_S{config.image_size}"
         / condition

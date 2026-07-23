@@ -143,6 +143,19 @@ def alias_map(configs: list[tuple[Path, ExperimentConfig]]) -> dict[Path, Path]:
 
 def link_or_copy(source: Path, target: Path) -> None:
     if target.exists():
+        source_stat = source.stat()
+        target_stat = target.stat()
+        same_inode = (
+            source_stat.st_dev == target_stat.st_dev
+            and source_stat.st_ino == target_stat.st_ino
+        )
+        if not same_inode and (
+            source_stat.st_size != target_stat.st_size
+            or file_sha256(source) != file_sha256(target)
+        ):
+            raise RuntimeError(
+                f"Existing alias artifact differs from canonical source: {target}"
+            )
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
