@@ -176,6 +176,23 @@ class HardvsIntegrityTests(unittest.TestCase):
                     manifest_sha256="fixture-manifest",
                 )
 
+    def test_extraction_audit_rejects_same_size_content_corruption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive, _manifest = self._archive_fixture(root)
+            with zipfile.ZipFile(archive) as handle:
+                infos = handle.infolist()
+            destination = root / "extracted"
+            target = destination / infos[0].filename
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"x" * infos[0].file_size)
+            with self.assertRaisesRegex(RuntimeError, "wrong_crc"):
+                prepare_hardvs.validate_extracted_members(
+                    infos,
+                    destination,
+                    excluded_members=set(),
+                )
+
     def test_split_materialization_excludes_only_declared_samples(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

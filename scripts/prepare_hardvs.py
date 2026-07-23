@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import binascii
 import hashlib
 import json
 import os
@@ -348,6 +349,7 @@ def validate_extracted_members(
     good = 0
     missing: list[str] = []
     wrong_size: list[tuple[str, int, int]] = []
+    wrong_crc: list[tuple[str, str, str]] = []
     exposed_exclusions: list[str] = []
     for info in infos:
         if info.is_dir() or not info.filename.lower().endswith(".npz"):
@@ -364,17 +366,30 @@ def validate_extracted_members(
         size = path.stat().st_size
         if size != info.file_size:
             wrong_size.append((info.filename, size, info.file_size))
-    if missing or wrong_size or exposed_exclusions:
+            continue
+        checksum = 0
+        with path.open("rb") as handle:
+            while block := handle.read(8 * 1024 * 1024):
+                checksum = binascii.crc32(block, checksum)
+        checksum &= 0xFFFFFFFF
+        if checksum != info.CRC:
+            wrong_crc.append(
+                (info.filename, f"{checksum:08x}", f"{info.CRC:08x}")
+            )
+    if missing or wrong_size or wrong_crc or exposed_exclusions:
         raise RuntimeError(
             "Extracted-member audit failed: "
             f"missing={missing[:5]} ({len(missing)} total), "
             f"wrong_size={wrong_size[:5]} ({len(wrong_size)} total), "
+            f"wrong_crc={wrong_crc[:5]} ({len(wrong_crc)} total), "
             f"exposed_exclusions={exposed_exclusions}"
         )
     return {
         "good_npz_members": good,
         "missing_good_members": 0,
         "wrong_size_good_members": 0,
+        "wrong_crc_good_members": 0,
+        "crc_verified_good_members": good,
         "exposed_excluded_members": 0,
     }
 
