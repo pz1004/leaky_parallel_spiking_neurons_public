@@ -1,4 +1,4 @@
-"""Expand the declarative reviewer-study matrix into immutable YAML configs."""
+"""Expand a declarative experiment matrix into YAML configurations."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def expand(spec: dict[str, Any], data_root: Path, manifests_root: Path, output: 
         for dataset in study["datasets"]:
             dataset_values = dict(spec.get("dataset_overrides", {}).get(dataset, {}))
             for model in study["models"]:
-                for time_steps in study["time_steps"]:
+                for time_steps in study.get("time_steps_by_dataset", {}).get(dataset, study["time_steps"]):
                     for seed in study["seeds"]:
                         for condition in conditions:
                             condition_name = condition["name"]

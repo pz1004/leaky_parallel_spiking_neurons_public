@@ -34,12 +34,15 @@ from experiments.config import (  # noqa: E402
     load_config,
     stable_hash,
 )
+from experiments.release_paths import portable_path, resolve_path  # noqa: E402
+from scripts.run_study_matrix import gpu_execution_lock, load_declared_configs  # noqa: E402
+
 from experiments.data import (  # noqa: E402
     PERTURBATION_NAMESPACE_SEED,
     frame_cache_namespace,
 )
 
-DEFAULT_DATASETS = ("cifar10_dvs", "dvs_gesture", "hardvs")
+DEFAULT_DATASETS = ("cifar10_dvs", "dvs_gesture")
 DEFAULT_MODELS = ("psn", "lpsn_a1_lif_init", "lpsn_a2_soft")
 COMPARATOR_ONLY_MODELS = ("lif", "masked_psn", "sliding_psn", "rpsu")
 DEFAULT_SEEDS = (42, 123, 256, 512, 1024)
@@ -136,7 +139,7 @@ def selected_configs(
         )
     selected = [found[key] for key in sorted(found)]
     incomplete = [
-        str(path.relative_to(PROJECT))
+        portable_path(path)
         for path, config in selected
         if not (run_dir(config) / "train_result.json").is_file()
         or "clean|0|0" not in ledger_keys(config)
@@ -169,22 +172,21 @@ def benchmark_configs(
         comparator = (
             config.experiment_id == "hardvs_main"
             and config.dataset == "hardvs"
-            and "hardvs" in datasets
-            and config.model in COMPARATOR_ONLY_MODELS
+            and config.model in set(COMPARATOR_ONLY_MODELS) | set(DEFAULT_MODELS)
             and config.time_steps == 16
         )
         if native or comparator:
             selected[path.resolve()] = config
     expected = (
         len(datasets) * len(DEFAULT_MODELS) * 4 * len(seeds)
-        + (len(COMPARATOR_ONLY_MODELS) * len(seeds) if "hardvs" in datasets else 0)
+        + len(set(COMPARATOR_ONLY_MODELS) | set(DEFAULT_MODELS)) * len(seeds)
     )
     if len(selected) != expected:
         raise FileNotFoundError(
             f"Benchmark selection has {len(selected)} configs, expected {expected}"
         )
     incomplete = [
-        str(path.relative_to(PROJECT))
+        portable_path(path)
         for path, config in selected.items()
         if not (run_dir(config) / "train_result.json").is_file()
         or config_evaluation_key(config) not in ledger_keys(config)
@@ -292,7 +294,7 @@ def run_model_task_sequence(
         key = evaluation_key(task.condition)
         if key in ledger_keys(config):
             continue
-        relative = task.config_path.relative_to(PROJECT)
+        relative = portable_path(task.config_path)
         log_name = stable_hash(f"{relative}|{key}")[:20] + ".log"
         execute(
             evaluate_command(python, task),
@@ -332,6 +334,7 @@ def main() -> int:
         type=Path,
         default=PROJECT / "configs" / "evaluation_grids.yml",
     )
+    parser.add_argument("--spec", type=Path, default=PROJECT / "configs/studies.yml", help="Active declaration spec; stale generated files are rejected")
     parser.add_argument("--dataset", action="append", choices=DEFAULT_DATASETS)
     parser.add_argument("--model", action="append", choices=DEFAULT_MODELS)
     parser.add_argument("--seed", action="append", type=int)
@@ -352,23 +355,31 @@ def main() -> int:
         choices=["temporal_and_comparators", "selected"],
         default="temporal_and_comparators",
         help=(
-            "Benchmark all native-T scaling cells plus the four additional "
+            "Benchmark all native-T scaling cells plus all seven retained "
             "HARDVS comparators, or only the T=32 diagnostic selection."
         ),
     )
     parser.add_argument("--max-influence-batches", type=int, default=0)
     parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--iterations", type=int, default=500)
+    parser.add_argument("--execute", action="store_true", help="Run evaluations and timing; otherwise print the requested selection")
     args = parser.parse_args()
     if args.workers < 1 or args.temporal_worker_budget < 1:
         parser.error("worker counts and temporal budget must be positive")
     if args.warmup < 0 or args.iterations < 1:
         parser.error("benchmark iteration counts are invalid")
 
+    args.configs_root = resolve_path(args.configs_root).resolve()
+    args.grids_manifest = resolve_path(args.grids_manifest)
+    args.logs_root = resolve_path(args.logs_root)
+    load_declared_configs(args.configs_root, resolve_path(args.spec))
     datasets = tuple(args.dataset or DEFAULT_DATASETS)
     models = tuple(args.model or DEFAULT_MODELS)
     seeds = tuple(args.seed or DEFAULT_SEEDS)
     grids = tuple(args.grid or DEFAULT_GRIDS)
+    if not args.execute:
+        print(json.dumps({"datasets": datasets, "models": models, "seeds": seeds, "time_steps": args.time_steps, "execution": "disabled; add --execute to run"}, indent=2))
+        return 0
     selected = selected_configs(
         args.configs_root.resolve(),
         datasets,
@@ -382,8 +393,12 @@ def main() -> int:
         else benchmark_configs(args.configs_root.resolve(), datasets, seeds)
     )
     conditions = load_conditions(args.grids_manifest, grids)
+    with gpu_execution_lock():
+        return execute_diagnostics(args, selected, benchmark_selected, conditions, datasets, models, seeds, grids)
+
+
+def execute_diagnostics(args, selected, benchmark_selected, conditions, datasets, models, seeds, grids) -> int:
     environment = os.environ.copy()
-    environment["CUDA_VISIBLE_DEVICES"] = "0"
     environment["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     environment.setdefault("PYTHONHASHSEED", "0")
     environment.setdefault("OMP_NUM_THREADS", "4")
@@ -498,7 +513,7 @@ def main() -> int:
                 safe_remove_cache(namespace, cache_root)
 
     for config_path, config in selected:
-        relative = config_path.relative_to(PROJECT)
+        relative = portable_path(config_path)
         if not args.skip_influence:
             output = run_dir(config) / "temporal_influence.json"
             if not valid_hashed_json(output):
@@ -529,7 +544,7 @@ def main() -> int:
 
     if not args.skip_benchmark:
         for config_path, config in benchmark_selected:
-            relative = config_path.relative_to(PROJECT)
+            relative = portable_path(config_path)
             output = run_dir(config) / "benchmark.json"
             if valid_hashed_json(output):
                 continue

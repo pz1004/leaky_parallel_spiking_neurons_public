@@ -1,4 +1,4 @@
-"""Hard-reset reference diagnostics for LP-SN Proposition 2b.
+"""Hard-reset reference-history diagnostics for LP-SN Proposition 3.
 
 These helpers intentionally use the hard-reset LIF spike history. They are
 therefore diagnostics for the one-sided hard-reset bound, not the A2
@@ -10,7 +10,10 @@ import math
 
 import torch
 
-from .lpsn_neuron import build_causal_exp_kernel, soft_reset_correction
+if __package__:
+    from .lpsn_neuron import build_causal_exp_kernel, soft_reset_correction
+else:  # Support direct imports from the repository directory.
+    from lpsn_neuron import build_causal_exp_kernel, soft_reset_correction
 
 
 def _stable_tau(tau: float, eps: float = 1e-6) -> float:
@@ -42,13 +45,13 @@ def hard_reset_lif_reference(
     return torch.stack(h_list), torch.stack(v_list), torch.stack(s_list)
 
 
-def prop2b_hard_reset_reference_bound(
+def hard_reset_reference_bound(
     x_seq: torch.Tensor,
     *,
     tau: float,
     v_threshold: float,
 ) -> dict[str, torch.Tensor]:
-    """Compute Prop. 2b using hard-reset LIF's own spike history.
+    """Compute the Proposition 3 bound using hard-reset LIF's own history.
 
     Returns the hard-reset reference membrane, the LP-SN soft-reset-corrected
     logits built from the hard-reset spike train, and the closed-form bound
@@ -93,14 +96,14 @@ def prop2b_hard_reset_reference_bound(
     }
 
 
-def prop2b_hard_reset_reference_stats(
+def hard_reset_reference_stats(
     x_seq: torch.Tensor,
     *,
     tau: float,
     v_threshold: float,
 ) -> dict[str, float]:
-    """Summarize the Prop. 2b hard-reset reference bound for plotting."""
-    result = prop2b_hard_reset_reference_bound(
+    """Summarize the Proposition 3 reference-history bound for plotting."""
+    result = hard_reset_reference_bound(
         x_seq,
         tau=tau,
         v_threshold=v_threshold,
@@ -121,8 +124,15 @@ def prop2b_hard_reset_reference_stats(
     }
 
 
+# Compatibility aliases preserve imports used by existing scripts and records.
+prop2b_hard_reset_reference_bound = hard_reset_reference_bound
+prop2b_hard_reset_reference_stats = hard_reset_reference_stats
+
+
 __all__ = [
     "hard_reset_lif_reference",
+    "hard_reset_reference_bound",
+    "hard_reset_reference_stats",
     "prop2b_hard_reset_reference_bound",
     "prop2b_hard_reset_reference_stats",
 ]

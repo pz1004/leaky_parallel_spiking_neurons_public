@@ -74,6 +74,7 @@ def _is_spiking(module: torch.nn.Module) -> bool:
         "SlidingPSN",
         "RPSU",
         "LPSpikingNeuron",
+        "FixedTemporalOperator",
     }
 
 

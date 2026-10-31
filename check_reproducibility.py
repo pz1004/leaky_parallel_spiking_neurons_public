@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lightweight environment check for the LP-SN manuscript runtime."""
+"""Lightweight environment check for the LP-SN reference runtime."""
 from __future__ import annotations
 
 import argparse

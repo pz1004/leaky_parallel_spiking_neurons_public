@@ -17,6 +17,8 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 
 from experiments.config import file_sha256, load_config, stable_hash  # noqa: E402
+from experiments.release_paths import resolve_path  # noqa: E402
+from scripts.run_study_matrix import load_declared_configs  # noqa: E402
 from experiments.data import (  # noqa: E402
     DATASET_META,
     PERTURBATION_NAMESPACE_SEED,
@@ -24,7 +26,7 @@ from experiments.data import (  # noqa: E402
 )
 
 DIAGNOSTIC_MODELS = {"psn", "lpsn_a1_lif_init", "lpsn_a2_soft"}
-DIAGNOSTIC_DATASETS = {"cifar10_dvs", "dvs_gesture", "hardvs"}
+DIAGNOSTIC_DATASETS = {"cifar10_dvs", "dvs_gesture"}
 COMPARATOR_ONLY_MODELS = {"lif", "masked_psn", "sliding_psn", "rpsu"}
 
 
@@ -87,6 +89,43 @@ def diagnostic_keys(path: Path, grids: tuple[str, ...]) -> set[str]:
     return keys
 
 
+def validate_hardvs_source(integrity: dict[str, Any], spec: dict[str, Any], *, historical: dict[str, Any] | None = None) -> list[str]:
+    """Check immutable source content independently of local provenance timestamps."""
+    errors: list[str] = []
+    mode = integrity.get("integrity_mode")
+    if mode == "known_mirror_exclusion":
+        expected_counts = {key: value for key, value in spec["known_mirror_effective_counts"].items() if key != "valid_unassigned_archive_npz"}
+        exclusions = {row["sample_id"] for key in ("known_mirror_corrupt_samples", "known_mirror_missing_assigned_samples") for row in spec[key]}
+        if integrity.get("archive_md5") != spec["known_mirror_archive_md5"] or integrity.get("archive_sha256") != spec["known_mirror_archive_sha256"]:
+            errors.append("HARDVS known-mirror archive content hashes differ")
+        if not integrity.get("source_deviation"):
+            errors.append("HARDVS known-mirror source deviation is not disclosed")
+    elif mode == "official_exact":
+        expected_counts = {row["name"].split("_", 1)[0]: int(row["samples"]) for row in spec["labels"]}
+        expected_counts["assigned"] = int(spec["official_assigned_samples"])
+        exclusions = set()
+        if integrity.get("archive_md5") != spec["official_archive_md5"]:
+            errors.append("HARDVS official archive content hash differs")
+    else:
+        return ["Unknown HARDVS integrity mode"]
+    if integrity.get("effective_counts") != expected_counts:
+        errors.append("HARDVS effective counts differ from the declared source protocol")
+    if set(integrity.get("excluded_sample_ids", [])) != exclusions:
+        errors.append("HARDVS exclusions differ from the declared source protocol")
+    for key in ("archive_sha256", "acquisition_record_hash", "record_hash", "preparation_script_sha256"):
+        digest = integrity.get(key, "")
+        if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            errors.append(f"HARDVS {key} is missing or invalid")
+    if historical is not None:
+        provenance = historical["provenance"]
+        for published_key, observed_key in (("acquisition_record_hash", "acquisition_record_hash"), ("integrity_record_hash", "record_hash"), ("preparation_git_commit", "preparation_git_commit"), ("preparation_script_sha256", "preparation_script_sha256")):
+            if provenance.get(published_key) != integrity.get(observed_key):
+                errors.append(f"HARDVS {published_key} differs from the historical source audit")
+        if historical["effective_counts"] != integrity.get("effective_counts") or {row["sample_id"] for row in historical["excluded_assigned_samples"]} != set(integrity.get("excluded_sample_ids", [])):
+            errors.append("HARDVS source population differs from the historical source audit")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -103,8 +142,10 @@ def main() -> int:
         default=None,
         help="Required diagnostic grid (default: all four committed grids)",
     )
-    parser.add_argument("--expected-configs", type=int, default=695)
+    parser.add_argument("--spec", type=Path, default=PROJECT / "configs/studies.yml", help="Active declaration spec; pass the historical spec explicitly when auditing the original matrix")
+    parser.add_argument("--expected-configs", type=int, default=410)
     parser.add_argument("--require-diagnostics", action="store_true")
+    parser.add_argument("--historical-source", action="store_true", help="Require the original acquisition/preparation provenance, rather than a fresh reproduction")
     parser.add_argument("--skip-artifact-hashes", action="store_true")
     parser.add_argument("--allow-incomplete", action="store_true")
     parser.add_argument(
@@ -113,6 +154,10 @@ def main() -> int:
         default=PROJECT / "aggregates" / "empirical_audit.json",
     )
     args = parser.parse_args()
+    args.configs_root = resolve_path(args.configs_root).resolve()
+    args.spec = resolve_path(args.spec)
+    args.grids_manifest = resolve_path(args.grids_manifest)
+    args.output = resolve_path(args.output)
 
     grids = tuple(
         args.grid
@@ -164,12 +209,16 @@ def main() -> int:
             digest_cache[key] = file_sha256(path)
         return digest_cache[key]
 
-    config_paths = sorted(args.configs_root.rglob("*.yml"))
+    config_paths = [path for path, _config in load_declared_configs(args.configs_root, args.spec)]
     stats["configs"] = len(config_paths)
     if len(config_paths) != args.expected_configs:
         errors.append(
             f"generated config count {len(config_paths)} != {args.expected_configs}"
         )
+
+    hardvs_spec = json.loads((PROJECT / "manifests" / "hardvs_compact_archive.json").read_text(encoding="utf-8"))
+    preparation_script_sha256 = file_sha256(PROJECT / "scripts" / "prepare_hardvs.py")
+    source_spec_sha256 = file_sha256(PROJECT / "manifests" / "hardvs_compact_archive.json")
 
     for config_path in config_paths:
         config = load_config(config_path)
@@ -187,58 +236,40 @@ def main() -> int:
         classes = int(DATASET_META[config.dataset]["classes"])
         if config.dataset == "hardvs":
             integrity = split.get("dataset_integrity", {})
-            if hardvs_source_audit is not None:
-                provenance = hardvs_source_audit.get("provenance", {})
-                published_exclusions = {
-                    str(row["sample_id"])
-                    for row in hardvs_source_audit.get(
-                        "excluded_assigned_samples", []
-                    )
-                }
-                observed_exclusions = set(
-                    integrity.get("excluded_sample_ids", [])
-                )
-                expected_pairs = (
-                    (
-                        "acquisition record",
-                        provenance.get("acquisition_record_hash"),
-                        integrity.get("acquisition_record_hash"),
-                    ),
-                    (
-                        "integrity record",
-                        provenance.get("integrity_record_hash"),
-                        integrity.get("record_hash"),
-                    ),
-                    (
-                        "preparation commit",
-                        provenance.get("preparation_git_commit"),
-                        integrity.get("preparation_git_commit"),
-                    ),
-                    (
-                        "preparation script",
-                        provenance.get("preparation_script_sha256"),
-                        integrity.get("preparation_script_sha256"),
-                    ),
-                )
-                for name, published, observed in expected_pairs:
-                    if published != observed:
-                        errors.append(
-                            f"{label}: HARDVS {name} differs from the "
-                            "published source audit"
-                        )
-                if (
-                    hardvs_source_audit.get("effective_counts")
-                    != integrity.get("effective_counts")
-                ):
-                    errors.append(
-                        f"{label}: HARDVS effective counts differ from the "
-                        "published source audit"
-                    )
-                if published_exclusions != observed_exclusions:
-                    errors.append(
-                        f"{label}: HARDVS exclusions differ from the "
-                        "published source audit"
-                    )
+            source_errors = validate_hardvs_source(
+                integrity, hardvs_spec,
+                historical=hardvs_source_audit if args.historical_source else None,
+            )
+            errors.extend(f"{label}: {error}" for error in source_errors)
+            if not args.historical_source:
+                record_name = integrity.get("record_path")
+                if not record_name:
+                    errors.append(f"{label}: HARDVS integrity record path is missing")
+                else:
+                    try:
+                        record_path = project_path(config.data_root) / record_name
+                        record = json.loads(record_path.read_text(encoding="utf-8"))
+                        claimed = record.pop("record_hash", None)
+                        if claimed != stable_hash(record) or claimed != integrity.get("record_hash"):
+                            errors.append(f"{label}: HARDVS local integrity-record hash mismatch")
+                        preparation = record["preparation_runtime"]
+                        if preparation.get("script_sha256") != integrity.get("preparation_script_sha256"):
+                            errors.append(f"{label}: HARDVS preparation-script provenance differs between records")
+                        if preparation.get("script_sha256") != preparation_script_sha256:
+                            errors.append(f"{label}: HARDVS was not prepared by the current release preparation script")
+                        if preparation.get("manifest_sha256") != source_spec_sha256:
+                            errors.append(f"{label}: HARDVS was prepared with a different source-integrity specification")
+                        if preparation.get("git_commit") != integrity.get("preparation_git_commit") or bool(preparation.get("git_dirty")) != bool(integrity.get("preparation_git_dirty")):
+                            errors.append(f"{label}: HARDVS preparation Git provenance differs between local records")
+                        archive = record["archive"]
+                        if archive.get("acquisition_record_hash") != integrity.get("acquisition_record_hash"):
+                            errors.append(f"{label}: HARDVS local acquisition-record hash mismatch")
+                        if record["splits"].get("effective_counts") != integrity.get("effective_counts") or set(record["splits"].get("excluded_sample_ids", [])) != set(integrity.get("excluded_sample_ids", [])):
+                            errors.append(f"{label}: HARDVS local source population mismatch")
+                        if archive.get("md5") != integrity.get("archive_md5") or archive.get("sha256") != integrity.get("archive_sha256"):
+                            errors.append(f"{label}: HARDVS local archive provenance mismatch")
+                    except Exception as error:
+                        errors.append(f"{label}: invalid local HARDVS integrity record: {error}")
             hardvs_sources.setdefault(
                 str(split["split_hash"]),
                 {
@@ -303,9 +334,9 @@ def main() -> int:
         if training_manifest.get("split_hash") != split["split_hash"]:
             errors.append(f"{label}: training manifest split hash mismatch")
         if bool(training_manifest.get("git_dirty")):
-            errors.append(f"{label}: training manifest records a dirty worktree")
+            (errors if args.historical_source else warnings).append(f"{label}: training manifest records a dirty worktree; regenerated tracked split manifests can cause this in fresh reproductions")
         if bool(environment.get("git_dirty")):
-            errors.append(f"{label}: environment records a dirty worktree")
+            (errors if args.historical_source else warnings).append(f"{label}: environment records a dirty worktree")
         if training_manifest.get("git_commit") != environment.get("git_commit"):
             errors.append(f"{label}: training/environment git commits differ")
         if train_result.get("best_epoch") is None:
@@ -370,7 +401,7 @@ def main() -> int:
                 errors.append(f"{label} {key}: evaluation manifest hash mismatch")
             stats["evaluation_manifests"] += 1
             if bool(evaluation_manifest.get("git_dirty")):
-                errors.append(f"{label} {key}: evaluation records a dirty worktree")
+                (errors if args.historical_source else warnings).append(f"{label} {key}: evaluation records a dirty worktree")
             if evaluation_manifest.get("split_hash") != split["split_hash"]:
                 errors.append(f"{label} {key}: evaluation manifest split mismatch")
             if evaluation_manifest.get("evaluation_key") != key:
@@ -463,7 +494,7 @@ def main() -> int:
             or (
                 config.experiment_id == "hardvs_main"
                 and config.dataset == "hardvs"
-                and config.model in COMPARATOR_ONLY_MODELS
+                and config.model in COMPARATOR_ONLY_MODELS | DIAGNOSTIC_MODELS
                 and config.time_steps == 16
             )
         )
@@ -486,8 +517,10 @@ def main() -> int:
         "schema_version": 1,
         "project": str(PROJECT),
         "config_root": str(args.configs_root),
+        "declaration_spec": str(args.spec),
         "required_diagnostic_grids": grids if args.require_diagnostics else [],
         "artifact_hashes_checked": not args.skip_artifact_hashes,
+        "source_audit_mode": "historical" if args.historical_source else "fresh_reproduction",
         "stats": stats,
         "hardvs_sources": sorted(
             hardvs_sources.values(), key=lambda row: row["split_hash"]

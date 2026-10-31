@@ -1,0 +1,63 @@
+defaults:
+  output_root: runs_revision
+  image_size: 128
+  architecture: vgg_small
+  epochs: 200
+  patience: 15
+  batch_size: 16
+  effective_batch_size: 64
+  num_workers: 4
+  learning_rate: 0.001
+  weight_decay: 0.0
+  amp: false
+  device: cuda:0
+  selection_metric: macro_f1
+  model_params: {}
+  smoke_samples: 0
+  cache_frames: true
+
+dataset_overrides:
+  hardvs:
+    epochs: 100
+    batch_size: 8
+    effective_batch_size: 64
+  cifar10_dvs:
+    epochs: 200
+  dvs_gesture:
+    epochs: 200
+
+studies:
+  hardvs_main:
+    datasets: [hardvs]
+    models: [lif, psn, masked_psn, sliding_psn, rpsu, lpsn_a1_lif_init, lpsn_a2_soft]
+    time_steps: [16]
+    seeds: [42, 123, 256, 512, 1024]
+
+  temporal_native:
+    datasets: [cifar10_dvs, dvs_gesture, hardvs]
+    models: [psn, lpsn_a1_lif_init, lpsn_a2_soft]
+    time_steps: [8, 16, 32, 64]
+    seeds: [42, 123, 256, 512, 1024]
+
+  density_sparsity:
+    datasets: [cifar10_dvs, hardvs]
+    models: [psn, lpsn_a1_lif_init, lpsn_a2_soft]
+    time_steps: [32]
+    seeds: [42, 123, 256, 512, 1024]
+    conditions:
+      - {name: event_thin, severity: 0.25}
+      - {name: event_thin, severity: 0.50}
+      - {name: event_thin, severity: 0.75}
+      - {name: event_thin, severity: 1.00}
+      - {name: event_thin_renorm, severity: 0.25}
+      - {name: event_thin_renorm, severity: 0.50}
+      - {name: event_thin_renorm, severity: 0.75}
+      - {name: event_thin_renorm, severity: 1.00}
+      - {name: amplitude_scale, severity: 0.25}
+      - {name: amplitude_scale, severity: 0.50}
+      - {name: amplitude_scale, severity: 0.75}
+      - {name: amplitude_scale, severity: 1.00}
+      - {name: temporal_sparse, severity: 0.25}
+      - {name: temporal_sparse, severity: 0.50}
+      - {name: temporal_sparse, severity: 0.75}
+      - {name: temporal_sparse, severity: 1.00}

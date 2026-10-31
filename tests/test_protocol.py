@@ -16,6 +16,57 @@ from experiments.cli import _exact_signed_rank, command_analyze, command_cache
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_retained_matrix_preserves_only_hardvs_t16(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        spec = yaml.safe_load((project / "configs/studies.yml").read_text())
+        declarations = 0
+        for study in spec["studies"].values():
+            for dataset in study["datasets"]:
+                lengths = study.get("time_steps_by_dataset", {}).get(dataset, study["time_steps"])
+                if dataset == "hardvs":
+                    self.assertEqual(lengths, [16])
+                    self.assertNotIn("conditions", study)
+                declarations += len(lengths) * len(study["models"]) * len(study["seeds"]) * len(study.get("conditions", [None]))
+        self.assertEqual(declarations, 410)
+        historical = yaml.safe_load((project / "configs/historical/studies_695.yml").read_text())
+        historical_count = sum(len(study["datasets"]) * len(study["time_steps"]) * len(study["models"]) * len(study["seeds"]) * len(study.get("conditions", [None])) for study in historical["studies"].values())
+        self.assertEqual(historical_count, 695)
+
+    def test_scheduler_refuses_stale_hardvs_configs_without_deleting_them(self) -> None:
+        from scripts.run_study_matrix import load_declared_configs
+        project = Path(__file__).resolve().parents[1]
+        spec = yaml.safe_load((project / "configs/studies.yml").read_text())
+        raw = {**spec["defaults"], **spec["dataset_overrides"]["hardvs"],
+               "schema_version": 1, "experiment_id": "temporal_native", "dataset": "hardvs",
+               "model": "psn", "time_steps": 32, "seed": 42, "data_root": "../data",
+               "split_manifest": "manifests/hardvs.json", "frame_cache_root": "../data/.lpsn_frame_cache",
+               "condition": {"name": "clean", "severity": 0.0, "draw": 0, "renormalize": False}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "retired.yml"
+            path.write_text(yaml.safe_dump(raw))
+            with self.assertRaisesRegex(RuntimeError, "undeclared/stale"):
+                load_declared_configs(Path(directory), project / "configs/studies.yml")
+            self.assertTrue(path.exists())
+            selected = load_declared_configs(Path(directory), project / "configs/historical/studies_695.yml")
+            self.assertEqual(len(selected), 1)
+            (Path(directory) / "duplicate.yml").write_text(path.read_text())
+            with self.assertRaisesRegex(RuntimeError, "duplicate"):
+                load_declared_configs(Path(directory), project / "configs/historical/studies_695.yml")
+
+    def test_extension_templates_are_portable_and_complete(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        counts = {"architecture": 0, "components": 0}
+        runs = set()
+        for path in (project / "configs/extension").rglob("*.yml"):
+            raw = yaml.safe_load(path.read_text())
+            config = ExperimentConfig.from_mapping(raw)
+            counts[path.relative_to(project / "configs/extension").parts[0]] += 1
+            self.assertNotIn(config.run_dir, runs)
+            runs.add(config.run_dir)
+            for field in ("data_root", "split_manifest", "output_root", "frame_cache_root"):
+                self.assertFalse(Path(raw[field]).is_absolute(), f"Non-portable {field}: {path}")
+        self.assertEqual(counts, {"architecture": 60, "components": 50})
+
     def test_cache_completion_uses_smoke_sample_count(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

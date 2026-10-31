@@ -10,17 +10,18 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import fcntl
 import json
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import yaml
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -34,8 +35,71 @@ from experiments.config import (  # noqa: E402
     stable_hash,
 )
 from experiments.data import frame_cache_namespace, load_split_manifest  # noqa: E402
+from experiments.expand_matrix import _slug  # noqa: E402
+from experiments.release_paths import EVIDENCE, portable_path, resolve_path  # noqa: E402
 
 IDENTITY_CONDITIONS = {"event_thin", "event_thin_renorm", "amplitude_scale", "temporal_sparse"}
+
+
+@contextmanager
+def gpu_execution_lock():
+    """Serialize top-level GPU stages while allowing their internal workers."""
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    with (EVIDENCE / "gpu.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(f"Another GPU stage holds {EVIDENCE / 'gpu.lock'}; retry after it finishes") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def declaration_key(config: ExperimentConfig) -> tuple[Any, ...]:
+    condition = config.condition
+    return (config.experiment_id, config.dataset, config.architecture, config.model,
+            config.time_steps, config.seed, condition.name, float(condition.severity),
+            condition.draw, condition.renormalize)
+
+
+def load_declared_configs(configs_root: Path, spec_path: Path) -> list[tuple[Path, ExperimentConfig]]:
+    """Reject stale or duplicate declarations without modifying generated files."""
+    spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    declared: set[tuple[Any, ...]] = set()
+    for study_name, study in spec["studies"].items():
+        for dataset in study["datasets"]:
+            defaults = {**spec["defaults"], **spec.get("dataset_overrides", {}).get(dataset, {})}
+            for model in study["models"]:
+                for length in study.get("time_steps_by_dataset", {}).get(dataset, study["time_steps"]):
+                    for seed in study["seeds"]:
+                        for condition in study.get("conditions", [{"name": "clean", "severity": 0.0}]):
+                            name, severity = condition["name"], float(condition.get("severity", 0.0))
+                            experiment = study_name if name == "clean" else f"{study_name}_{name}_{_slug(severity)}"
+                            declared.add((experiment, dataset, defaults.get("architecture", "vgg_small"),
+                                          model, length, seed, name, severity, 0, name == "event_thin_renorm"))
+    loaded: list[tuple[Path, ExperimentConfig]] = []
+    stale: list[str] = []
+    seen: set[tuple[Any, ...]] = set()
+    duplicates: list[str] = []
+    for path in sorted(configs_root.rglob("*.yml")):
+        config = load_config(path)
+        key = declaration_key(config)
+        if key not in declared:
+            stale.append(str(path.relative_to(configs_root)))
+        elif key in seen:
+            duplicates.append(str(path.relative_to(configs_root)))
+        else:
+            seen.add(key)
+            loaded.append((path.resolve(), config))
+    if stale or duplicates:
+        details = "outside active spec: " + ", ".join(stale[:8]) if stale else ""
+        if duplicates:
+            details += "; duplicate declarations: " + ", ".join(duplicates[:8])
+        raise RuntimeError(f"Refusing configuration directory: {len(stale)} undeclared/stale and {len(duplicates)} duplicate files for {spec_path}. {details}. No files were changed. Expand the intended spec into a new empty directory and pass --configs-root; use --spec explicitly for a historical/custom study.")
+    if not loaded:
+        raise FileNotFoundError(f"No generated configurations below {configs_root}")
+    return loaded
 
 
 def now() -> str:
@@ -176,8 +240,8 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
     proof = {
         "kind": "deterministic_identity_reuse",
         "created_at": now(),
-        "source_config": str(source_path.relative_to(PROJECT)),
-        "target_config": str(target_path.relative_to(PROJECT)),
+        "source_config": portable_path(source_path),
+        "target_config": portable_path(target_path),
         "source_config_hash": source.config_hash,
         "target_config_hash": target.config_hash,
         "basis": (
@@ -228,9 +292,7 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
             "experiment_id": target.experiment_id,
             "condition": asdict(target.condition),
             "config_hash": target.config_hash,
-            "checkpoint": str(
-                (target_dir / "checkpoint_best.pt").relative_to(PROJECT)
-            ),
+            "checkpoint": portable_path(target_dir / "checkpoint_best.pt"),
             "checkpoint_sha256": file_sha256(
                 target_dir / "checkpoint_best.pt"
             ),
@@ -301,12 +363,14 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
             "condition": target.condition.name,
             "severity": target.condition.severity,
             "draw": target.condition.draw,
+            "evaluation_key": evaluation_key(target),
+            "renormalize": target.condition.renormalize,
             "evaluated_at": source_clean["evaluated_at"],
             "equivalence_materialized_at": now(),
-            "per_sample_path": str(target_samples.relative_to(PROJECT)),
-            "checkpoint": str((target_dir / "checkpoint_best.pt").relative_to(PROJECT)),
+            "per_sample_path": portable_path(target_samples),
+            "checkpoint": portable_path(target_dir / "checkpoint_best.pt"),
             "checkpoint_sha256": file_sha256(target_dir / "checkpoint_best.pt"),
-            "evaluation_manifest_path": str(evaluation_manifest_path.relative_to(PROJECT)),
+            "evaluation_manifest_path": portable_path(evaluation_manifest_path),
             "equivalent_evaluation_source": proof["source_config"],
             "independent_replication": False,
         }
@@ -373,7 +437,7 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
             "equivalence_provenance": proof,
             "materialization_runtime": materialization_evaluation_runtime,
             "source_evaluation_manifest": (
-                str(source_evaluation_manifest_path.relative_to(PROJECT))
+                portable_path(source_evaluation_manifest_path)
                 if source_evaluation_manifest_path
                 and source_evaluation_manifest_path.is_file()
                 else None
@@ -381,9 +445,7 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
             "artifacts": {
                 "per_sample_path": payload["per_sample_path"],
                 "per_sample_sha256": file_sha256(target_samples),
-                "confusion_path": str(
-                    (target_dir / f"confusion_{output_hash}.npy").relative_to(PROJECT)
-                ),
+                "confusion_path": portable_path(target_dir / f"confusion_{output_hash}.npy"),
                 "confusion_sha256": file_sha256(
                     target_dir / f"confusion_{output_hash}.npy"
                 ),
@@ -403,14 +465,14 @@ def materialize_alias(target_path: Path, source_path: Path) -> dict[str, Any]:
         "checkpoint_epoch": payload["checkpoint_epoch"],
         "checkpoint_sha256": payload["checkpoint_sha256"],
         "split_hash": split["split_hash"],
-        "evaluation_manifest_path": str(evaluation_manifest_path.relative_to(PROJECT)),
+        "evaluation_manifest_path": portable_path(evaluation_manifest_path),
         "evaluation_manifest_hash": evaluation_manifest["manifest_hash"],
         "equivalent_evaluation_source": proof["source_config"],
     }
     (target_dir / "test_evaluation_ledger.jsonl").write_text(
         json.dumps(ledger_row, sort_keys=True) + "\n", encoding="utf-8"
     )
-    return {"target": str(target_path.relative_to(PROJECT)), "source": proof["source_config"]}
+    return {"target": portable_path(target_path), "source": proof["source_config"]}
 
 
 def safe_remove_cache(namespace: Path, frame_cache_root: Path) -> None:
@@ -426,6 +488,7 @@ def safe_remove_cache(namespace: Path, frame_cache_root: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--configs-root", type=Path, default=PROJECT / "generated_configs")
+    parser.add_argument("--spec", type=Path, default=PROJECT / "configs/studies.yml", help="Active declaration spec; historical/custom studies require an explicit path")
     parser.add_argument("--dataset", action="append", choices=["cifar10_dvs", "dvs_gesture", "hardvs"])
     parser.add_argument("--study", action="append")
     parser.add_argument("--workers", type=int, default=4)
@@ -442,16 +505,17 @@ def main() -> int:
     parser.add_argument("--logs-root", type=Path, default=PROJECT / "orchestration_logs")
     parser.add_argument("--retain-cache", action="store_true")
     parser.add_argument("--no-equivalent-reuse", action="store_true")
+    parser.add_argument("--execute", action="store_true", help="Run training and locked-test evaluation; otherwise print the selection only")
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be positive")
     if args.temporal_worker_budget < 1:
         parser.error("--temporal-worker-budget must be positive")
-    configs_root = args.configs_root.resolve()
+    configs_root = resolve_path(args.configs_root).resolve()
+    args.logs_root = resolve_path(args.logs_root)
 
     loaded: list[tuple[Path, ExperimentConfig]] = []
-    for path in sorted(configs_root.rglob("*.yml")):
-        config = load_config(path)
+    for path, config in load_declared_configs(configs_root, resolve_path(args.spec)):
         if args.dataset and config.dataset not in args.dataset:
             continue
         if args.study and config.experiment_id.split("_", 1)[0] not in args.study and not any(
@@ -463,6 +527,14 @@ def main() -> int:
         raise FileNotFoundError("No matching generated configurations")
 
     aliases = {} if args.no_equivalent_reuse else alias_map(loaded)
+    if not args.execute:
+        print(json.dumps({"selected_configs": len(loaded), "physical_runs": len(loaded) - len(aliases), "equivalent_aliases": len(aliases), "execution": "disabled; add --execute to run"}, indent=2))
+        return 0
+    with gpu_execution_lock():
+        return execute_matrix(args, loaded, aliases, configs_root)
+
+
+def execute_matrix(args, loaded, aliases, configs_root) -> int:
     physical = [(path, config) for path, config in loaded if path not in aliases]
     groups: dict[Path, list[Path]] = {}
     for path, config in physical:
@@ -472,7 +544,6 @@ def main() -> int:
         groups.setdefault(namespace.resolve(), []).append(path)
 
     environment = os.environ.copy()
-    environment["CUDA_VISIBLE_DEVICES"] = "0"
     environment["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     environment.setdefault("PYTHONHASHSEED", "0")
     environment.setdefault("OMP_NUM_THREADS", "4")

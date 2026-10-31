@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata in this file."
+type: software
+title: "Leaky-Parallel Spiking Neurons With LIF-Anchored Temporal Mixing"
+authors:
+  - family-names: Jang
+    given-names: Sooyoung
+  - family-names: Woo
+    given-names: Sungpil
+  - family-names: Lee
+    given-names: Ahyun
+repository-code: "https://github.com/pz1004/leaky_parallel_spiking_neurons_public"
+url: "https://github.com/pz1004/leaky_parallel_spiking_neurons_public"
+license: MIT

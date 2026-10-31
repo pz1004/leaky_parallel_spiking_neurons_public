@@ -1,5 +1,5 @@
 defaults:
-  output_root: runs_revision
+  output_root: runs_baseline
   image_size: 128
   architecture: vgg_small
   epochs: 200
@@ -37,10 +37,11 @@ studies:
     datasets: [cifar10_dvs, dvs_gesture, hardvs]
     models: [psn, lpsn_a1_lif_init, lpsn_a2_soft]
     time_steps: [8, 16, 32, 64]
+    time_steps_by_dataset: {hardvs: [16]}
     seeds: [42, 123, 256, 512, 1024]
 
   density_sparsity:
-    datasets: [cifar10_dvs, hardvs]
+    datasets: [cifar10_dvs]
     models: [psn, lpsn_a1_lif_init, lpsn_a2_soft]
     time_steps: [32]
     seeds: [42, 123, 256, 512, 1024]

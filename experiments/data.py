@@ -6,10 +6,9 @@ import hashlib
 import json
 import os
 from collections import defaultdict
-from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import torch
@@ -17,6 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from .config import ConditionConfig, ExperimentConfig, SCHEMA_VERSION, stable_hash, utc_now, write_json
+from .release_paths import resolve_path
 
 DATASET_META = {
     "synthetic": {"height": 16, "width": 16, "classes": 4},
@@ -200,6 +200,14 @@ def prepare_split_manifest(dataset: str, data_root: Path, output: Path, *, seed:
             "effective_counts": integrity["splits"]["effective_counts"],
             "excluded_sample_ids": integrity["splits"]["excluded_sample_ids"],
         }
+        if dataset_integrity["preparation_git_dirty"]:
+            # The preparation command records its explicit opt-in inside the
+            # already hash-verified runtime record. Keep that decision visible
+            # in newly generated split provenance without rewriting old records.
+            argv = integrity["preparation_runtime"].get("argv", [])
+            dataset_integrity["preparation_dirty_code_allowed"] = (
+                isinstance(argv, list) and "--allow-dirty-code" in argv
+            )
     else:
         raise ValueError(dataset)
     manifest = {
@@ -263,7 +271,11 @@ def validate_split_manifest(manifest: dict[str, Any]) -> None:
         ):
             raise ValueError("Known-mirror HARDVS mode must record 13 exclusions")
         if bool(integrity.get("preparation_git_dirty")):
-            raise ValueError("HARDVS was prepared from a dirty tracked source tree")
+            if integrity.get("preparation_dirty_code_allowed") is not True:
+                raise ValueError("Dirty HARDVS preparation requires recorded --allow-dirty-code provenance")
+            digest = integrity.get("preparation_script_sha256", "")
+            if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                raise ValueError("Dirty HARDVS preparation requires its preparation-script SHA-256")
 
 
 def load_split_manifest(path: Path) -> dict[str, Any]:
@@ -495,7 +507,7 @@ def frame_cache_namespace(
     source = cache_source_condition(selected)
     if not config.cache_frames or source is None:
         return None
-    split_manifest_path = Path(str(config.split_manifest)).resolve()
+    split_manifest_path = resolve_path(config.split_manifest).resolve()
     split_stat = split_manifest_path.stat()
     split_hash = _split_hash_for_cache(
         str(split_manifest_path),
@@ -505,7 +517,7 @@ def frame_cache_namespace(
     seed = 0
     condition = f"{source.name}_{source.severity:.12g}_draw{source.draw}_seed{seed}"
     return (
-        Path(str(config.frame_cache_root))
+        resolve_path(str(config.frame_cache_root))
         / f"schema_v{FRAME_CACHE_SCHEMA}"
         / config.dataset
         / f"split_{split_hash[:20]}"
@@ -561,7 +573,7 @@ class EventManifestDataset(Dataset):
         if split not in {"train", "val", "test"}:
             raise ValueError(split)
         self.config = config
-        self.root = Path(config.data_root)
+        self.root = resolve_path(config.data_root)
         self.records = list(manifest["splits"][split])
         if config.smoke_samples > 0:
             self.records = self.records[: config.smoke_samples]
@@ -594,6 +606,8 @@ class EventManifestDataset(Dataset):
         if cache_path is not None and cache_path.is_file():
             frames, event_count, duration = _read_frame_cache(cache_path, expected_shape)
         else:
+            if cache_path is not None and os.environ.get("LPSN_READONLY_FRAME_CACHE") == "1":
+                raise FileNotFoundError(f"Read-only frozen frame cache is missing {cache_path}")
             event_condition = self.condition if source_condition is None else source_condition
             rng = np.random.default_rng(_seed_for(record["id"], event_condition, self.config.seed))
             if self.config.dataset == "synthetic":
@@ -648,7 +662,7 @@ class EventManifestDataset(Dataset):
 
 
 def build_dataset(config: ExperimentConfig, split: str, condition: ConditionConfig | None = None) -> tuple[Dataset, dict]:
-    manifest = load_split_manifest(Path(config.split_manifest))
+    manifest = load_split_manifest(resolve_path(config.split_manifest))
     if manifest["dataset"] != config.dataset:
         raise ValueError(f"Config dataset {config.dataset!r} does not match split manifest {manifest['dataset']!r}")
     return EventManifestDataset(config, manifest, split, condition=condition), manifest

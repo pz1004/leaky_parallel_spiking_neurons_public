@@ -6,16 +6,25 @@ Reference:
 
 The LP-SN reparameterizes PSN's free T x T temporal mixing matrix as
         W = K_{tau, alpha} + Delta W
-where K_{tau, alpha} is a causal exponential Toeplitz kernel parameterized
-by two learnable scalars (tau, alpha), and Delta W is a causally-masked
-learnable residual.
+where K_{tau, alpha} is a causal exponential Toeplitz kernel with two
+scalars (tau, alpha). The variant determines whether these scalars are fixed
+or learned and whether a residual is present. Learned residuals are causally
+masked except in the dense PSN-recovery configuration.
 
 Theoretical properties:
-  - At init (Delta W = 0, alpha = 1/tau, lambda = 1 - 1/tau): exactly
-    equivalent to no-reset LIF (Proposition 1).
-  - With soft-reset correction (beta = V_th, detached spike history):
-    exactly equivalent to soft-reset LIF (Proposition 2a).
-  - As alpha -> 0 with Delta W unrestricted: recovers PSN (Proposition 3).
+  - With zero initial voltage, zero residual, matched threshold and bias
+    b = -V_th, alpha = 1/tau, and lambda = 1 - 1/tau, the kernel reproduces
+    no-reset LIF in exact arithmetic (Proposition 1). A1 keeps these values fixed.
+  - A2 additionally constructs its own soft-reset spike history sequentially,
+    with reset amplitude beta = V_th. Under the same conditions it reproduces
+    soft-reset LIF's forward spikes (Proposition 2). With fixed leak, gain,
+    reset amplitude and threshold, matched surrogate derivatives, and reset
+    spikes detached in both implementations while the carried voltage remains
+    differentiable, their input gradients agree in exact arithmetic. Upstream
+    gradients also agree in otherwise matched networks with the same loss
+    (Corollary 1).
+  - With alpha = 0, an unrestricted dense residual, learnable temporal bias,
+    no reset, and no residual penalty: recovers PSN (Proposition 4).
 
 Usage:
     >>> import torch
@@ -26,8 +35,9 @@ Usage:
     >>> x_seq = torch.randn(16, 64, 128, 7, 7)  # [T, B, C, H, W]
     >>> s_seq = neuron(x_seq)  # [T, B, C, H, W]
 
-Compatible with SpikingJelly's activation_based API. Use with
-step_mode='m' (multi-step) for the parallel computation benefit.
+Compatible with SpikingJelly's activation_based API in step_mode='m' only.
+Input sequences use the time-major shape [T, B, ...]. Matrix-only variants
+apply dense temporal mixing; exact A2 also constructs reset history sequentially.
 """
 from __future__ import annotations
 
@@ -73,7 +83,7 @@ def build_causal_exp_kernel(
 
     Note: We parameterize tau through log_tau to ensure tau > 0 under
     unconstrained gradient updates, then clamp the effective tau to the
-    manuscript's stable tau > 1 regime. The geometric form lambda^(t-s)
+    reference model's stable tau > 1 regime. The geometric form lambda^(t-s)
     (rather than exp(-(t-s)/tau)) matches LIF's discrete-time recurrence
     exactly under the closed-form no-reset LIF equivalence derivation.
 
@@ -127,7 +137,7 @@ def _validate_exact_detached_scope(
     learnable_beta: bool,
     v_threshold: float,
 ) -> None:
-    """Guard the theorem-level A2 soft-reset equivalence scope."""
+    """Guard the fixed-parameter A2 soft-reset equivalence scope."""
     errors = []
     if learnable_kernel:
         errors.append("learnable_kernel=False")
@@ -151,7 +161,7 @@ def _validate_exact_detached_scope(
         expected = ", ".join(errors)
         raise ValueError(
             "soft_reset_strategy='exact_detached' is reserved for the "
-            "Proposition 2a/A2 theorem scope and requires "
+            "Proposition 2/A2 theorem scope and requires "
             f"{expected}. Use soft_reset_strategy='tentative' for approximate "
             "or learnable reset ablations."
         )
@@ -170,7 +180,7 @@ def soft_reset_correction(
 
     For each timestep t, returns
         correction[t] = beta * sum_{s' < t, S[s'] = 1} lambda^(t - s'),
-    consistent with Proposition 2a of the LP-SN manuscript.
+    consistent with Proposition 2 of the accompanying paper.
 
     The spike history s_detached is treated as a constant (no gradient).
 
@@ -199,7 +209,7 @@ def soft_reset_correction(
     # arbitrary trailing spatial dimensions.
     # s_detached: [T, B, ...] -> flatten trailing dims for matmul,
     # then reshape back.
-    T_, B = s_detached.shape[0], s_detached.shape[1]
+    T_ = s_detached.shape[0]
     flat = s_detached.reshape(T_, -1)             # [T, B * spatial]
     correction_flat = corr_kernel @ flat           # [T, B * spatial]
     correction = correction_flat.reshape(s_detached.shape)  # [T, B, ...]
@@ -215,7 +225,7 @@ _BaseClass = base.MemoryModule if _SJ_AVAILABLE else nn.Module
 class LPSpikingNeuron(_BaseClass):
     """Leaky-Parallel Spiking Neuron.
 
-    Forward computation:
+    Forward computation without reset correction:
         W      = K(tau, alpha) + mask * Delta W
         H      = einsum('tu,ub...->tb...', W, x_seq)
         logits = H + b
@@ -228,16 +238,17 @@ class LPSpikingNeuron(_BaseClass):
     used in the equivalence checks.
 
     Args:
-        T: number of timesteps. Must be set at construction; the kernel
-           is built lazily once T is known.
+        T: number of timesteps, fixed at construction. The effective kernel
+           is constructed from the current parameters during each forward call.
         init_tau: initial membrane time constant. Default 2.0 matches
-                  SpikingJelly's LIF default and yields LIF-equivalent
-                  initialization (Proposition 1).
+                  SpikingJelly's LIF default. The no-reset equivalence also
+                  requires the gain, residual, bias, and initial-state
+                  conditions stated above (Proposition 1).
         init_alpha: initial input gain. If None, defaults to 1/init_tau
                     (Proposition 1 exact-equivalence setting).
         v_threshold: spike threshold V_th. Default 1.0.
         learnable_kernel: if True, (tau, alpha) are learnable. If False,
-                          they remain frozen at init values (ablation A1).
+                          they remain frozen at init values, as in A1 and A2.
         learnable_residual: if True, Delta W is a learnable T x T parameter.
                             If False, Delta W = 0 (frozen).
         residual_init: initial value for Delta W elements. Default 0.0.
@@ -247,24 +258,23 @@ class LPSpikingNeuron(_BaseClass):
         learnable_bias: if True, learn the PSN-style temporal bias b.
                         If False, keep it frozen.
         bias_init: scalar initialization for b. Defaults to ``-V_th``.
-        soft_reset: if True, apply the theorem-level detached soft-reset
-                    correction using ``"exact_detached"``. Pass
-                    ``soft_reset_strategy="tentative"`` explicitly to use the
-                    fully parallel approximation.
+        soft_reset: optional compatibility alias. True selects
+                    ``"exact_detached"`` and False selects ``"none"``, overriding
+                    soft_reset_strategy. Omit this argument when selecting
+                    ``soft_reset_strategy="tentative"`` explicitly.
         soft_reset_strategy: one of ``"none"``, ``"tentative"``, or
                              ``"exact_detached"``. The exact strategy
-                             constructs the detached soft-reset spike
-                             history sequentially and is used for the
-                             proposition-level verification; tentative
-                             mode keeps the fully parallel approximation.
+                             constructs the realized soft-reset spike history
+                             sequentially and detaches it from differentiation,
+                             as in the reported A2 configuration. Tentative mode
+                             uses a parallel approximation to that history.
         learnable_beta: if True and soft_reset, beta is learnable; else
                         fixed at v_threshold.
         surrogate_function: a SpikingJelly surrogate function. Default
                             ATan, matching the original PSN paper.
-        residual_l2: optional L2 regularization weight for Delta W. If
-                     non-zero, this term is added to the module's
-                     `.regularization_loss()` property for the trainer
-                     to include in the total loss.
+        residual_l2: optional L2 regularization weight for a learned Delta W.
+                     The ``regularization_loss()`` method returns the penalty
+                     for the trainer to include in the total loss.
     """
 
     def __init__(
@@ -328,7 +338,7 @@ class LPSpikingNeuron(_BaseClass):
 
         # Learnable kernel parameters (per-layer scalars). We store log(tau)
         # to keep tau positive; the effective tau helper clamps to tau > 1
-        # under unconstrained updates, matching the manuscript's stable regime.
+        # under unconstrained updates, matching the reference model's stable regime.
         log_tau_init = math.log(init_tau)
         alpha_init = (1.0 / init_tau) if init_alpha is None else init_alpha
 
@@ -394,6 +404,13 @@ class LPSpikingNeuron(_BaseClass):
         if _SJ_AVAILABLE:
             self.step_mode = "m"
 
+    def supported_step_mode(self) -> tuple[str, ...]:
+        """Only complete time-major sequences are supported.
+
+        Accepting single-step mode would confuse the batch axis with time.
+        """
+        return ("m",)
+
     # -----------------------------------------------------------------
     def kernel_weight(self) -> torch.Tensor:
         """Return the structured causal exponential kernel K."""
@@ -420,10 +437,12 @@ class LPSpikingNeuron(_BaseClass):
     def temporal_profile(self) -> str:
         """Return the temporal-computation profile used by this instance.
 
-        ``exact_detached_scan`` is theorem-level exact for A2, but it
-        constructs the detached spike history sequentially. ``tentative_parallel``
-        keeps a fully parallel reset approximation. All no-reset variants use
-        the dense GEMM profile shared with PSN in the training harness.
+        ``exact_detached_scan`` constructs A2's realized spike history
+        sequentially, detaches it, and applies a correction matrix product.
+        ``tentative_parallel`` uses a parallel approximation to that history.
+        All no-reset variants use the dense GEMM profile shared with PSN in
+        the training harness. These labels describe execution structure;
+        they do not imply a latency or energy advantage.
         """
         if self.soft_reset_strategy == "exact_detached":
             return "exact_detached_scan"
@@ -445,9 +464,9 @@ class LPSpikingNeuron(_BaseClass):
     def _exact_detached_soft_reset_spikes(self, membrane: torch.Tensor) -> torch.Tensor:
         """Sequentially construct the exact detached soft-reset spike history.
 
-        This is intentionally used for proposition verification and A2-style
-        ablations. The correction itself remains detached from the spike
-        pattern, matching the theorem statement.
+        This constructs the realized history used by the A2 configuration.
+        Detaching each spike removes the history-construction path from
+        differentiation under the fixed-parameter equivalence conditions.
         """
         tau = _effective_tau(self.log_tau)
         lam = (1.0 - 1.0 / tau).to(device=membrane.device, dtype=membrane.dtype)
@@ -576,9 +595,10 @@ class LPSpikingNeuron(_BaseClass):
     def regularization_loss(self) -> torch.Tensor:
         """L2 penalty on the residual Delta W.
 
-        Add this to the training loss to encourage banded / sparse
-        structure in the learned residual (consistent with the
-        renewal-process prediction in the manuscript).
+        Add this to the training loss to shrink the residual's magnitude.
+        An L2 penalty does not impose sparsity or a finite bandwidth. The
+        renewal calculation characterizes a reference-history expectation;
+        it does not identify the support of a learned residual.
 
         Returns:
             scalar tensor: residual_l2 * ||Delta W||_F^2,

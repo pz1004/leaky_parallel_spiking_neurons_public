@@ -4,17 +4,38 @@ targets:
       - [python, -m, experiments.cli, prepare, --dataset, synthetic, --data-root, ., --output, manifests/synthetic.json]
       - [python, -m, experiments.cli, train, --config, configs/smoke.yml]
       - [python, -m, experiments.cli, evaluate, --config, configs/smoke.yml]
-      - [python, -m, experiments.cli, analyze, --runs-root, runs_revision_smoke, --output, aggregates/smoke.csv]
+      - [python, -m, experiments.cli, analyze, --runs-root, runs_smoke, --output, aggregates/smoke.csv]
   - name: prepare_real_splits
     commands:
       - [python, -m, experiments.cli, prepare, --dataset, cifar10_dvs, --data-root, ../data, --output, manifests/cifar10_dvs.json]
       - [python, -m, experiments.cli, prepare, --dataset, dvs_gesture, --data-root, ../data, --output, manifests/dvs_gesture.json]
       - [python, -m, experiments.cli, prepare, --dataset, hardvs, --data-root, ../data, --output, manifests/hardvs.json]
       - [python, -m, experiments.expand_matrix, --spec, configs/studies.yml, --data-root, ../data, --manifests-root, manifests, --output, generated_configs]
-  - name: complete_empirical_package
+  - name: retained_baseline_package
     commands:
-      - [python, scripts/run_study_matrix.py, --workers, "4"]
-      - [python, scripts/run_diagnostics.py, --workers, "3"]
-      - [python, -m, experiments.cli, analyze, --runs-root, runs_revision, --output, aggregates/results.csv]
+      - [python, scripts/run_study_matrix.py, --workers, "4", --execute]
+      - [python, scripts/run_diagnostics.py, --workers, "3", --execute]
+      - [python, -m, experiments.cli, analyze, --runs-root, runs_baseline, --output, aggregates/results.csv]
       - [python, scripts/aggregate_diagnostics.py]
       - [python, scripts/audit_empirical_package.py, --require-diagnostics]
+  - name: prepare_extension
+    commands:
+      - [python, scripts/prepare_extension.py, --execute]
+  - name: extension_training
+    commands:
+      - [python, scripts/run_extension.py, --execute]
+      - [python, scripts/audit_extension.py]
+  - name: extension_measurements
+    commands:
+      - [python, scripts/measure_gpu_energy.py]
+      - [python, scripts/diagnose_checkpoints.py]
+      - [python, scripts/diagnose_checkpoints.py, --layers]
+      - [python, scripts/benchmark_implementations.py]
+      - [python, scripts/run_reset_intervention.py]
+  - name: extension_summaries
+    commands:
+      - [python, scripts/aggregate_extension.py]
+      - [python, scripts/summarize_layer_diagnostics.py]
+      - [python, scripts/summarize_execution_comparison.py]
+      - [python, scripts/summarize_reset_intervention.py]
+      - [python, scripts/summarize_optimization.py]

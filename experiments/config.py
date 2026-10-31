@@ -20,6 +20,7 @@ from typing import Any, Mapping
 
 import torch
 import yaml
+from .release_paths import resolve_path
 
 SCHEMA_VERSION = 1
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,11 @@ ALLOWED_MODELS = {
     "rpsu",
     "lpsn_a1_lif_init",
     "lpsn_a2_soft",
+    "fixed_diagonal",
+    "fixed_causal_uniform",
+    "lpsn_a3_kernel",
+    "lpsn_fixed_kernel_residual",
+    "lpsn_a4a_frozen_bias",
 }
 
 
@@ -79,7 +85,7 @@ class ExperimentConfig:
     time_steps: int
     data_root: str
     split_manifest: str
-    output_root: str = "runs_revision"
+    output_root: str = "runs_baseline"
     image_size: int = 128
     architecture: str = "vgg_small"
     epochs: int = 200
@@ -107,6 +113,8 @@ class ExperimentConfig:
         return config
 
     def validate(self) -> None:
+        if self.architecture not in {"vgg_small", "vgg_small_half", "spiking_resnet18"}:
+            raise ValueError(f"Unsupported architecture {self.architecture!r}")
         if self.schema_version != SCHEMA_VERSION:
             raise ValueError(f"Expected schema_version={SCHEMA_VERSION}, got {self.schema_version}")
         if self.dataset not in ALLOWED_DATASETS:
@@ -132,7 +140,11 @@ class ExperimentConfig:
 
     @property
     def run_dir(self) -> Path:
-        return Path(self.output_root) / self.experiment_id / self.dataset / self.model / f"T{self.time_steps}" / f"seed_{self.seed}"
+        root = resolve_path(self.output_root) / self.experiment_id / self.dataset
+        # Keep historical VGG paths intact; other architectures cannot collide.
+        if self.architecture != "vgg_small":
+            root = root / self.architecture
+        return root / self.model / f"T{self.time_steps}" / f"seed_{self.seed}"
 
     @property
     def config_hash(self) -> str:
@@ -158,6 +170,7 @@ class RunManifest:
     seed: int
     time_steps: int
     condition: dict[str, Any]
+    architecture: str = "vgg_small"
     checkpoint_epoch: int | None = None
     test_evaluated_at: str | None = None
 
@@ -193,7 +206,7 @@ class MetricsRecord:
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
-    config_path = Path(path)
+    config_path = resolve_path(path)
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"Configuration must be a mapping: {config_path}")
@@ -249,6 +262,7 @@ def runtime_manifest(config: ExperimentConfig, *, phase: str, split_hash: str) -
         seed=config.seed,
         time_steps=config.time_steps,
         condition=asdict(config.condition),
+        architecture=config.architecture,
     )
 
 

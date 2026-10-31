@@ -6,7 +6,7 @@ seed: 42
 time_steps: 8
 data_root: .
 split_manifest: manifests/synthetic.json
-output_root: runs_revision_smoke
+output_root: runs_smoke
 image_size: 32
 architecture: vgg_small
 epochs: 1

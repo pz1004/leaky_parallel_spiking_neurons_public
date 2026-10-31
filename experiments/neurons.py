@@ -7,7 +7,6 @@ than importing its full BrainCog training stack.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,9 +37,43 @@ NEURON_METADATA = {
     "rpsu": NeuronMetadata(
         "RPSU", "https://github.com/Brain-Cog-Lab/PSU", "89fd724365cd4970cf3cf3802122c9fc22285a71", "masked_dense_gemm"
     ),
-    "lpsn_a1_lif_init": NeuronMetadata("LP-SN A1", "this artifact", "current commit", "dense_gemm"),
-    "lpsn_a2_soft": NeuronMetadata("LP-SN A2", "this artifact", "current commit", "exact_detached_scan"),
+    "lpsn_a1_lif_init": NeuronMetadata("LP-SN A1", "LP-SN reference implementation", "recorded in run_manifest.json", "dense_gemm"),
+    "lpsn_a2_soft": NeuronMetadata("LP-SN A2", "LP-SN reference implementation", "recorded in run_manifest.json", "exact_detached_scan"),
 }
+
+EXTENSION_MODELS = {
+    "fixed_diagonal": "Row-sum-matched diagonal",
+    "fixed_causal_uniform": "Row-sum-matched causal uniform",
+    "lpsn_a3_kernel": "LP-SN A3",
+    "lpsn_fixed_kernel_residual": "Fixed kernel + residual (frozen bias)",
+    "lpsn_a4a_frozen_bias": "Learned kernel + residual (frozen bias)",
+}
+for _key, _label in EXTENSION_MODELS.items():
+    NEURON_METADATA[_key] = NeuronMetadata(_label, "LP-SN reference implementation", "recorded in run_manifest.json", "dense_gemm")
+
+
+class FixedTemporalOperator(nn.Module, base.StepModule):
+    """Frozen controls with exactly A1's row sums and threshold."""
+    def __init__(self, time_steps: int, kind: str):
+        super().__init__()
+        self.step_mode = "m"
+        self.time_steps = time_steps
+        t = torch.arange(1, time_steps + 1, dtype=torch.float32)
+        row_sum = 1.0 - 0.5 ** t
+        weight = torch.diag(row_sum) if kind == "fixed_diagonal" else (
+            torch.tril(torch.ones(time_steps, time_steps)) * (row_sum / t)[:, None]
+        )
+        self.register_buffer("weight", weight)
+        self.register_buffer("bias", -torch.ones(time_steps, 1))
+        self.surrogate_function = surrogate.ATan(alpha=2.0, spiking=True)
+
+    def supported_step_mode(self):
+        return ("m",)
+
+    def forward(self, x):
+        if x.shape[0] != self.time_steps:
+            raise ValueError("Temporal length mismatch")
+        return self.surrogate_function((self.weight @ x.flatten(1) + self.bias).view_as(x))
 
 
 def _rpsu_matrices(time_steps: int, tau: float) -> tuple[torch.Tensor, torch.Tensor]:
@@ -109,7 +142,13 @@ def build_neuron(name: str, time_steps: int, params: dict[str, Any] | None = Non
         )
     elif name == "rpsu":
         node = RPSU(time_steps, tau=float(params.get("tau", 2.0)), threshold=float(params.get("threshold", 1.0)))
-    elif name in {"lpsn_a1_lif_init", "lpsn_a2_soft"}:
+    elif name in {"fixed_diagonal", "fixed_causal_uniform"}:
+        if params:
+            raise ValueError("Fixed controls do not accept parameter overrides")
+        node = FixedTemporalOperator(time_steps, name)
+    elif name == "lpsn_fixed_kernel_residual":
+        node = build_lpsn_neuron(T=time_steps, variant="lpsn_a4a_frozen_bias", learnable_kernel=False, **params)
+    elif name in {"lpsn_a1_lif_init", "lpsn_a2_soft", "lpsn_a3_kernel", "lpsn_a4a_frozen_bias"}:
         node = build_lpsn_neuron(T=time_steps, variant=name, **params)
     else:
         raise ValueError(name)

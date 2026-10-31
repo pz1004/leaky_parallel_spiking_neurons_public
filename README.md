@@ -1,300 +1,81 @@
 # Leaky-Parallel Spiking Neurons (LP-SN)
 
-This artifact contains the LP-SN implementation and the complete, config-driven
-pipeline for the reviewer-remediation experiments. Training, validation-based
-selection, locked-test evaluation, perturbation generation, temporal analysis,
-benchmarking, and result aggregation are all executable from this repository.
+## Abstract
 
-Datasets, trained checkpoints, and bulky raw run logs are not redistributed.
-The small split manifests and declarative study specification are included.
-
-## Contents
-
-- `lpsn_neuron.py` and `lpsn_variants.py`: reusable LP-SN implementation and named A1--A5 variants.
-- `experiments/`: dataset, model-adapter, training, evaluation, corruption, temporal-influence, and analysis code.
-- `configs/studies.yml`: the complete 695-run training matrix for the new studies.
-- `configs/reproduction.yml`: named end-to-end reproduction targets.
-- `manifests/`: deterministic CIFAR10-DVS and subject-disjoint DVS-Gesture split manifests.
-- `tests/`: split, corruption, native-length, and model-adapter tests.
-- `requirements.txt` and `environment.yml`: pinned runtime definitions.
+LP-SN is a PyTorch/SpikingJelly neuron family that combines temporal mixing
+with the exponential dynamics of leaky integrate-and-fire neurons. It provides
+fixed and learnable temporal kernels, optional residual weights, and exact
+soft-reset dynamics for experimenting with spiking neural networks.
 
 ## Environment
 
-The recorded environment uses Python 3.12, PyTorch 2.10.0, torchvision 0.25.0,
-CUDA 12.8, and SpikingJelly commit `9b87d38`.
+The Linux reference environment uses **Python 3.12**, **PyTorch 2.10.0 with
+CUDA 12.8 wheels**, and **SpikingJelly at commit `9b87d38`**. Versions are pinned in
+[environment.yml](environment.yml). The example below runs on CPU; GPU use
+requires a compatible NVIDIA driver.
+
+## Installation
 
 ```bash
+git clone https://github.com/pz1004/leaky_parallel_spiking_neurons_public.git
+cd leaky_parallel_spiking_neurons_public
 conda env create -f environment.yml
-conda activate lpsn-manuscript
-python check_reproducibility.py
-python -m unittest discover -v tests
+conda activate lpsn
 ```
 
-Run all commands below from this directory.
+Run the example from the repository directory. No dataset or checkpoint is needed.
 
-## Dataset Preparation
-
-Place the datasets below the chosen data root without changing their official
-test assignments:
-
-```text
-data/
-  CIFAR10DVS/events_np/<class>/*.npz
-  DVSGesture/download/ibmGestureTrain/<subject_condition>/*.npy
-  DVSGesture/download/ibmGestureTest/<subject_condition>/*.npy
-  HARDVS/raw/{train,val,test}/action_<id>/*.npz
-```
-
-HARDVS is not bundled and must be acquired under its own terms. The default
-protocol requires the exact 244,899,036,166-byte official archive (MD5
-`9c4cc0d9ba043faa17f6f1a9e9aff982`) and preserves every published train,
-validation, and test row. Put that archive at
-`../data/HARDVS/download/MINIHARDVS_EVENT_files.zip`, then run:
-
-```bash
-python scripts/acquire_hardvs.py --output ../data/HARDVS/download
-python scripts/prepare_hardvs.py --download ../data/HARDVS/download \
-  --data-root ../data
-```
-
-The pinned chunked mirror is the same size but is not byte-identical to the
-official object: its combined MD5 is `ef1099ca11f647958870ada2ef29e2d9`, and a
-complete read of all 107,710 NPZ members finds six corrupt assigned samples
-(three train and three test). Full label-to-central-directory reconciliation
-also finds seven consecutive assigned `action_006` train rows with no archive
-member. The mirror is therefore rejected by default. If the official provider
-is inaccessible, the only supported fallback is an explicit 13-sample
-exclusion protocol:
-
-```bash
-python scripts/acquire_hardvs.py --output ../data/HARDVS/download --workers 8 \
-  --allow-known-corrupt-mirror
-python scripts/prepare_hardvs.py --download ../data/HARDVS/download \
-  --data-root ../data --allow-known-corrupt-mirror
-```
-
-That opt-in verifies every downloaded chunk, the combined archive MD5 and
-SHA-256, all label digests, the complete six-member CRC failure inventory, and all
-107,646 assigned label identifiers. It then quarantines the six unreadable
-members and excludes those plus the seven absent rows. Effective counts are
-64,516 train, 10,734 validation, and 32,383 test (107,633 assigned samples);
-the generated integrity record labels this as a source deviation. It must not
-be reported as an exact replication of the official 107,646-row split.
-The committed `manifests/hardvs_source_audit.json` records the completed
-archive/member/label reconciliation, all 13 exclusions, extracted-payload CRC
-coverage, and the hashes of the local acquisition and preparation records.
-
-The downloader does not redistribute data from this repository. Users remain
-responsible for the dataset terms and should prefer the original provider when
-its client is available. Acquisition performs a complete CRC read and writes a
-hash-protected record; preparation refuses to proceed without that matching
-record, validates the label digests and split disjointness, creates only
-symlinks in `HARDVS/raw/{train,val,test}`, and removes the source archive after
-successful extraction unless `--keep-archive` is given. It refuses a dirty
-tracked source tree by default and records the preparation commit plus script
-and manifest hashes in the dataset integrity record.
-
-CIFAR10-DVS keeps the TEBN test assignment and takes a deterministic
-class-stratified validation subset from training. DVS-Gesture keeps the
-official test assignment and uses a subject-disjoint validation subset from
-training.
-
-Generate or verify manifests:
-
-```bash
-python -m experiments.cli prepare --dataset cifar10_dvs --data-root ../data \
-  --output manifests/cifar10_dvs.json
-python -m experiments.cli prepare --dataset dvs_gesture --data-root ../data \
-  --output manifests/dvs_gesture.json
-python -m experiments.cli prepare --dataset hardvs --data-root ../data \
-  --output manifests/hardvs.json
-```
-
-Each manifest contains sample identifiers, labels, split membership, and a
-content hash. Dataset paths remain relative and the datasets themselves are not
-included.
-
-## Locked Evaluation Protocol
-
-Training never constructs a test dataset. It selects checkpoints using
-validation macro-F1, with validation accuracy as the prespecified tie-breaker:
-
-```bash
-python -m experiments.cli train --config generated_configs/<study>/<dataset>/<model>/T<steps>/seed_<seed>.yml
-```
-
-The CLI enables strict PyTorch deterministic algorithms, deterministic cuDNN,
-and `CUBLAS_WORKSPACE_CONFIG=:4096:8`; each environment manifest records these
-settings. If an operation has no deterministic CUDA implementation, training
-fails rather than silently continuing with a warning.
-
-The separately invoked evaluation command loads only the selected checkpoint.
-Every `(condition, severity, draw)` is recorded in an append-only ledger and a
-duplicate locked-test evaluation is rejected:
-
-```bash
-python -m experiments.cli evaluate --config <config.yml>
-```
-
-The training manifest is never overwritten by evaluation. Each test opening
-has its own hash-bearing manifest with evaluation-time git state, checkpoint
-epoch and SHA-256, selection rule, split hash, and hashes of its per-sample and
-confusion artifacts. Per-layer firing activity, macro metrics, latency,
-throughput, and peak allocated CUDA memory are machine-readable.
-
-For a completed run created before evaluation manifests were introduced,
-backfill hashes the already sealed checkpoint, per-sample rows, and confusion
-matrix without recomputing predictions, and labels the result explicitly:
-
-```bash
-python scripts/backfill_evaluation_manifests.py \
-  --runs-root runs_revision --dry-run
-python scripts/backfill_evaluation_manifests.py \
-  --runs-root runs_revision \
-  --output aggregates/evaluation_manifest_backfill.json
-```
-
-## Full Study Matrix
-
-Expand the committed declarative matrix after preparing all manifests:
-
-```bash
-python -m experiments.expand_matrix \
-  --spec configs/studies.yml \
-  --data-root ../data \
-  --manifests-root manifests \
-  --output generated_configs
-```
-
-The matrix specifies:
-
-- Full HARDVS at `T=16` for LIF, PSN, masked PSN, sliding PSN, RPSU, LP-SN A1, and LP-SN A2.
-- Native retraining at `T = 8, 16, 32, 64` on CIFAR10-DVS, DVS-Gesture, and HARDVS.
-- Matched retraining for raw-event density, temporal sparsity, amplitude-only controls, and mass-renormalized thinning.
-- The matched seeds `42, 123, 256, 512, 1024`.
-
-For the full matrix, use the resumable cache-aware scheduler rather than
-manually invoking 695 commands:
-
-```bash
-python scripts/run_study_matrix.py --workers 4
-```
-
-The scheduler precomputes lossless float32 frame caches once per raw-event
-condition, runs matched models against the same cache, removes a cache only
-after its whole group succeeds, and resumes from completed run ledgers.
-Severity-1 thinning, renormalized thinning, amplitude scaling, and temporal
-sparsity are mathematical identity conditions. Those cells, plus duplicate
-clean declarations shared by two studies, reuse one deterministic physical
-run with an `equivalence_provenance.json` record; they are not treated as
-independent replications.
-
-All event recordings are divided into equal-duration bins over their complete
-native duration. A model is reconstructed for each native `T`; fixed-length
-zero padding is not used as a sequence-length experiment.
-
-## Robustness and Temporal Analyses
-
-Generate the shared sensor-motivated corruption grid and evaluate ten draws per
-non-clean condition:
-
-```bash
-python -m experiments.cli corrupt --output manifests/corruptions.json
-python -m experiments.cli evaluate-grid --config <clean-T32-config.yml> \
-  --manifest manifests/corruptions.json --skip-completed
-```
-
-The committed named grids can be used instead of the generated JSON manifest,
-for example `--manifest configs/evaluation_grids.yml --grid robustness`.
-
-The grid covers event dropout, background activity, polarity flips, timestamp
-jitter, contiguous packet loss, and hot-pixel bursts at three severities. A
-perturbation is determined by sample, condition, severity, and declared draw,
-so the identical realization is shared across every model and initialization
-seed. These are explicitly sensor-motivated synthetic corruptions, not a
-calibrated physical-sensor model.
-
-For the complete clean-selected `T=32` diagnostic package (all four committed
-grids, temporal input gradients, and non-overlapping fixed benchmarks), use
-the resumable scheduler:
-
-```bash
-python scripts/run_diagnostics.py --workers 3
-```
-
-It caches each raw-event corruption once, evaluates matched run directories
-sequentially while allowing different models to run concurrently, and removes
-each cache only after its group succeeds. Benchmarks are always serialized so
-their timings cannot interfere with one another.
-
-Individual temporal input influence and fixed benchmark commands remain
-available:
-
-```bash
-python -m experiments.cli temporal-influence --config <config.yml> \
-  --output <influence.json>
-python -m experiments.cli benchmark --config <config.yml> \
-  --warmup 100 --iterations 500 --output <benchmark.json>
-```
-
-The benchmark uses a synchronized, all-zero tensor already resident on the
-recorded device. It measures model-forward latency only, not event decoding,
-host transfer, end-to-end application latency, energy, or neuromorphic
-hardware efficiency.
-
-Use `evaluate --condition causal_prefix --severity 0.25`, `0.50`, `0.75`, and
-`1.00` for causal-prefix curves, and `reverse` or `permute` for temporal-order
-controls.
-
-## Aggregation and Named Reproduction Targets
-
-```bash
-python -m experiments.cli analyze --runs-root runs_revision \
-  --output aggregates/results.csv
-python scripts/aggregate_diagnostics.py
-python scripts/audit_empirical_package.py --require-diagnostics
-python -m experiments.cli reproduce --matrix configs/reproduction.yml \
-  --target smoke --execute
-```
-
-Aggregation reports hierarchical bootstrap intervals by resampling training
-seeds and then corruption draws within seeds. Clean-relative density results
-use the matched `temporal_native` clean cell when their own experiment has no
-duplicate clean declaration, and the output records that reference explicitly.
-The audit checks all 695 declarations, sealed evaluation artifacts, hashes,
-sample/confusion counts, alias provenance, and diagnostic coverage. Manuscript
-tables should be built only from these audited aggregates, never by manual
-transcription.
-
-## Controlled Comparator Scope
-
-PSN, masked PSN, and sliding PSN use the pinned SpikingJelly implementations.
-RPSU is an independent implementation of the published equations, with the
-official source revision recorded as
-`Brain-Cog-Lab/PSU@89fd724365cd4970cf3cf3802122c9fc22285a71`.
-All comparators use the same VGG-Small backbone and optimization protocol.
-Full sequence architectures such as P-SpikeSSM and SpikingSSMs are contextual
-references, not mislabeled drop-in neuron comparisons.
-
-## Minimal LP-SN Usage
+## Usage
 
 ```python
 import torch
 from lpsn_variants import build_lpsn_neuron
 
-neuron = build_lpsn_neuron(T=16, variant="a2")
-x_seq = torch.randn(16, 32, 128)  # [time, batch, ...]
-s_seq = neuron(x_seq)
+T, batch, features = 16, 2, 64
+neuron = build_lpsn_neuron(T=T, variant="a1")
+x = torch.randn(T, batch, features, requires_grad=True)
+
+spikes = neuron(x)
+spikes.mean().backward()  # Surrogate gradients flow to x and upstream layers.
+print(spikes.shape)      # torch.Size([16, 2, 64])
 ```
 
-## Release Scope
+Inputs use **`[time, batch, ...]`** order; outputs have the same shape.
+The time dimension must match `T` at construction. Only multi-step mode is
+supported. Each call processes an independent sequence; membrane and reset
+state are not carried between calls. Keep the neuron and input on the same
+device and use matching dtypes.
 
-The release package includes complete code, configurations, split/corruption
-manifests, and tests, and it generates lightweight aggregate-table inputs. It
-intentionally excludes licensed datasets, checkpoints, and bulky raw logs.
-Consequently it is code-complete but not a pretrained-artifact archive; the
-manuscript and response letter must describe that distinction exactly.
+| Variant | Temporal computation |
+| --- | --- |
+| `a1` | Fixed exponential kernel, without reset |
+| `a2` | Fixed exponential kernel with exact soft reset; reset spike history is detached from gradients |
+| `a3` | Learnable exponential kernel |
+| `a4` | Learnable kernel, causal residual, and bias |
+| `a5` | Dense, noncausal temporal mixing with parallel spiking neuron (PSN) initialization |
 
-## Citation
+A1 and A2 have no trainable neuron parameters but pass gradients to upstream
+layers. **A2 constructs its reset history sequentially.** For residual variants,
+add `neuron.regularization_loss()` to your task loss; it includes the configured
+penalty weight. See [lpsn_variants.py](lpsn_variants.py) for configuration options.
 
-Add the final paper citation and immutable release DOI before publication.
+## Main Results
+
+Reported **test accuracy (%)**, averaged over five matched seeds with a shared
+VGG-Small backbone. PSN is the unconstrained temporal-mixing baseline.
+
+| Dataset | Timesteps | PSN | LP-SN A1 | LP-SN A2 |
+| --- | ---: | ---: | ---: | ---: |
+| CIFAR10-DVS | 32 | 65.38 | 71.84 | 71.66 |
+| DVS-Gesture | 32 | 62.73 | 73.11 | 74.92 |
+| HARDVS | 16 | 11.97 | 9.90 | 15.98 |
+
+Performance depends on dataset and architecture. These five-seed comparisons
+did not reach statistical significance after correction for multiple comparisons.
+HARDVS uses the [documented mirror-exclusion split](docs/datasets.md#hardvs).
+
+In the VGG-Small zero-input GPU benchmark, A1 had similar inference latency to
+PSN, while A2 was slower. Neither variant reduced measured gross GPU energy
+relative to PSN on the evaluated validation inputs.
+
+[Full experiment guide](docs/reproduction.md) · [Citation](CITATION.cff) · [MIT license](LICENSE)

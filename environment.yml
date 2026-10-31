@@ -1,4 +1,4 @@
-name: lpsn-manuscript
+name: lpsn
 channels:
   - conda-forge
 dependencies:

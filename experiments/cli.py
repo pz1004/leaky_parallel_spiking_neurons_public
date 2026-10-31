@@ -1,22 +1,23 @@
-"""Command-line interface for the LP-SN reviewer-remediation experiments.
+"""Command-line interface for LP-SN experiments and reproduction.
 
 Examples:
     python -m experiments.cli prepare --dataset cifar10_dvs --data-root ../data \
         --output manifests/cifar10_dvs.json
     python -m experiments.cli train --config configs/smoke.yml
     python -m experiments.cli evaluate --config configs/smoke.yml
-    python -m experiments.cli analyze --runs-root runs_revision --output aggregates/results.csv
+    python -m experiments.cli analyze --runs-root runs_baseline --output aggregates/results.csv
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import contextmanager
+import fcntl
 import json
 import math
 import os
 import subprocess
-import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -56,8 +57,9 @@ from .data import (
     prepare_split_manifest,
 )
 from .engine import evaluate_loader, make_loader, record_dict, seed_everything, train_epoch
-from .model import SharedVGGSNN
+from .model import build_model
 from .neurons import neuron_metadata
+from .release_paths import portable_path, resolve_path
 
 
 def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
@@ -72,20 +74,16 @@ def _write_yaml(path: Path, value: Any) -> None:
 
 
 def _project_path(path: Path) -> Path:
-    return path if path.is_absolute() else Path(__file__).resolve().parents[1] / path
+    return resolve_path(path)
 
 
 def _portable_path(path: Path) -> str:
-    resolved = _project_path(path).resolve()
-    project = Path(__file__).resolve().parents[1]
-    try:
-        return str(resolved.relative_to(project))
-    except ValueError:
-        return str(resolved)
+    return portable_path(path)
 
 
-def _model(config: ExperimentConfig) -> SharedVGGSNN:
-    model = SharedVGGSNN(
+def _model(config: ExperimentConfig) -> torch.nn.Module:
+    model = build_model(
+        architecture=config.architecture,
         neuron_name=config.model,
         time_steps=config.time_steps,
         num_classes=int(DATASET_META[config.dataset]["classes"]),
@@ -96,14 +94,20 @@ def _model(config: ExperimentConfig) -> SharedVGGSNN:
 
 
 def _load_checkpoint(config: ExperimentConfig, checkpoint_path: Path | None = None):
-    path = checkpoint_path or config.run_dir / "checkpoint_best.pt"
+    path = _project_path(checkpoint_path or config.run_dir / "checkpoint_best.pt")
     if not path.exists():
         raise FileNotFoundError(f"Selected checkpoint does not exist: {path}")
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if checkpoint["config"].get("architecture", "vgg_small") != config.architecture:
+        raise ValueError("Checkpoint/config mismatch for architecture")
+    if checkpoint["config"].get("model_params", {}) != config.model_params:
+        raise ValueError("Checkpoint/config mismatch for model_params")
+    if checkpoint["config"]["seed"] != config.seed:
+        raise ValueError("Checkpoint/config mismatch for seed")
     for key in ("dataset", "model", "time_steps", "image_size"):
         if checkpoint["config"][key] != getattr(config, key):
             raise ValueError(f"Checkpoint/config mismatch for {key}: {checkpoint['config'][key]} != {getattr(config, key)}")
-    manifest = load_split_manifest(Path(config.split_manifest))
+    manifest = load_split_manifest(_project_path(Path(config.split_manifest)))
     if checkpoint["split_hash"] != manifest["split_hash"]:
         raise ValueError("Checkpoint and current split manifest have different hashes")
     model = _model(config)
@@ -174,13 +178,40 @@ def command_cache(args: argparse.Namespace) -> int:
     return 0
 
 
+@contextmanager
+def _run_protocol_lock(run_dir: Path, *, blocking: bool = False):
+    """Serialize training and test-read reservation without stale lock files."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with (run_dir / ".protocol.lock").open("a", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError as exc:
+            raise RuntimeError(f"Another training or test-reservation operation is active: {run_dir}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _assert_training_allowed(run_dir: Path) -> None:
+    markers = ("test_evaluation_ledger.jsonl", "test_evaluation_started.json", "locked_test_metrics.jsonl")
+    reservations = run_dir / "test_read_reservations"
+    if any((run_dir / name).exists() for name in markers) or (
+        reservations.exists() and any(reservations.iterdir())
+    ):
+        raise RuntimeError(f"Refusing to train in a run directory whose locked test set was already opened: {run_dir}")
+
+
 def command_train(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    with _run_protocol_lock(config.run_dir):
+        _assert_training_allowed(config.run_dir)
+        return _train(config)
+
+
+def _train(config: ExperimentConfig) -> int:
     seed_everything(config.seed)
     run_dir = config.run_dir
-    run_dir.mkdir(parents=True, exist_ok=True)
-    if (run_dir / "test_evaluation_ledger.jsonl").exists():
-        raise RuntimeError(f"Refusing to train in a run directory whose locked test set was already opened: {run_dir}")
     train_dataset, manifest = build_dataset(config, "train")
     validation_dataset, validation_manifest = build_dataset(config, "val")
     if manifest["split_hash"] != validation_manifest["split_hash"]:
@@ -272,6 +303,7 @@ def command_train(args: argparse.Namespace) -> int:
         "split_hash": manifest["split_hash"],
         "dataset": config.dataset,
         "model": config.model,
+        "architecture": config.architecture,
         "seed": config.seed,
         "time_steps": config.time_steps,
         "condition": asdict(config.condition),
@@ -310,6 +342,8 @@ def _condition_from_args(config: ExperimentConfig, args: argparse.Namespace) -> 
 
 
 def _evaluation_key(config: ExperimentConfig) -> str:
+    # Preserve frozen ledger and artifact identities. Renormalized thinning is
+    # selected by the distinct event_thin_renorm name in the data pipeline.
     condition = config.condition
     return f"{condition.name}|{condition.severity:.12g}|{condition.draw}"
 
@@ -324,12 +358,128 @@ def _ledger_keys(path: Path) -> set[str]:
     }
 
 
+def _reservation_path(config: ExperimentConfig, key: str) -> Path:
+    return config.run_dir / "test_read_reservations" / f"{stable_hash(key)}.json"
+
+
+def _assert_test_available(config: ExperimentConfig, key: str) -> None:
+    if key in _ledger_keys(config.run_dir / "test_evaluation_ledger.jsonl"):
+        raise RuntimeError(f"Locked-test condition was already evaluated; refusing another test read: {key}")
+    # Historical single-marker runs remain sealed, including interrupted reads.
+    if (config.run_dir / "test_evaluation_started.json").exists():
+        raise RuntimeError("Locked-test evaluation was already started; refusing another test read")
+    if _reservation_path(config, key).exists():
+        raise RuntimeError(f"Locked-test condition was already started; refusing another test read: {key}")
+    metrics = config.run_dir / "locked_test_metrics.jsonl"
+    if metrics.exists():
+        for line in metrics.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            previous = row.get("evaluation_key") or _evaluation_key(replace(config, condition=ConditionConfig(
+                name=str(row["condition"]), severity=float(row["severity"]),
+                draw=int(row["draw"]), renormalize=bool(row.get("renormalize", False)),
+            )))
+            if previous == key:
+                raise RuntimeError(f"Locked-test artifacts already exist; refusing another test read: {key}")
+    output_hash = stable_hash(key)[:12]
+    if any(path.exists() for path in (
+        config.run_dir / f"per_sample_{output_hash}.jsonl",
+        config.run_dir / f"confusion_{output_hash}.npy",
+        config.run_dir / "evaluation_manifests" / f"{output_hash}.json",
+    )):
+        raise RuntimeError(f"Partial locked-test artifacts already exist; refusing another test read: {key}")
+
+
+def _validate_identity_alias(config: ExperimentConfig, checkpoint: dict[str, Any], completed: dict[str, Any]) -> None:
+    """Verify a declared identity reuse without rewriting the source checkpoint."""
+    proof_path = config.run_dir / "equivalence_provenance.json"
+    snapshot_path = config.run_dir / "config.yml"
+    if not proof_path.is_file() or not snapshot_path.is_file():
+        raise RuntimeError("Completed training and checkpoint configurations do not match; alias evidence is missing")
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    target = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+    source = checkpoint["config"]
+    if (
+        proof.get("kind") != "deterministic_identity_reuse"
+        or proof.get("independent_replication") is not False
+        or completed.get("independent_replication") is not False
+        or proof.get("source_config_hash") != checkpoint["config_hash"]
+        or proof.get("target_config_hash") != completed["config_hash"]
+        or not proof.get("source_config")
+        or proof["source_config"] != completed.get("equivalent_training_source")
+        or not isinstance(target, dict)
+        or stable_hash(target) != completed["config_hash"]
+        or target.get("experiment_id") != config.experiment_id
+    ):
+        raise RuntimeError("Identity-alias provenance does not match the frozen source and target configurations")
+    ignored = {"experiment_id", "condition"}
+    if {key: value for key, value in source.items() if key not in ignored} != {
+        key: value for key, value in target.items() if key not in ignored
+    }:
+        raise RuntimeError("Identity alias changes training parameters beyond experiment_id and condition")
+    source_condition = source.get("condition", {})
+    target_condition = target.get("condition", {})
+    identity_names = {"event_thin", "event_thin_renorm", "amplitude_scale", "temporal_sparse"}
+    target_is_identity = target_condition.get("name") == "clean" or (
+        target_condition.get("name") in identity_names
+        and float(target_condition.get("severity", -1)) == 1.0
+    )
+    if source_condition.get("name") != "clean" or not target_is_identity:
+        raise RuntimeError("Identity alias does not map a clean source to a declared identity condition")
+
+
+def _validate_completed_training(config: ExperimentConfig, checkpoint: dict[str, Any], selected_path: Path) -> str:
+    result_path = config.run_dir / "train_result.json"
+    if not result_path.is_file():
+        raise RuntimeError(f"Cannot read the locked test split without completed training: {result_path}")
+    completed = json.loads(result_path.read_text(encoding="utf-8"))
+    if stable_hash(checkpoint["config"]) != checkpoint["config_hash"]:
+        raise RuntimeError("Checkpoint training configuration hash is inconsistent")
+    if completed["config_hash"] != checkpoint["config_hash"]:
+        _validate_identity_alias(config, checkpoint, completed)
+    if checkpoint["selection_split"] != "validation":
+        raise RuntimeError("Locked-test evaluation requires a validation-selected checkpoint")
+    checkpoint_hash = file_sha256(selected_path)
+    if checkpoint_hash != completed["checkpoint_sha256"]:
+        raise RuntimeError("Selected checkpoint changed after training completion")
+    return checkpoint_hash
+
+
+def _reserve_test_read(config: ExperimentConfig, key: str, checkpoint_hash: str) -> Path:
+    """Persist a condition-specific reservation before a test dataset is opened.
+
+    The caller holds the run protocol lock. Reservations intentionally survive
+    successful evaluations and exceptions; restarting cannot repeat a read.
+    """
+    _assert_test_available(config, key)
+    path = _reservation_path(config, key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            json.dump({"started_at": utc_now(), "evaluation_key": key,
+                       "checkpoint_sha256": checkpoint_hash,
+                       "evaluation_config_hash": config.config_hash}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise RuntimeError(f"Locked-test condition was already started; refusing another test read: {key}") from exc
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return path
+
+
 def evaluate_checkpoint(config: ExperimentConfig, checkpoint_path: Path | None = None) -> dict[str, Any]:
-    model, checkpoint, selected_path = _load_checkpoint(config, checkpoint_path)
-    ledger = config.run_dir / "test_evaluation_ledger.jsonl"
     key = _evaluation_key(config)
-    if key in _ledger_keys(ledger):
-        raise RuntimeError(f"Locked-test condition was already evaluated: {key}")
+    with _run_protocol_lock(config.run_dir):
+        _assert_test_available(config, key)
+        model, checkpoint, selected_path = _load_checkpoint(config, checkpoint_path)
+        checkpoint_hash = _validate_completed_training(config, checkpoint, selected_path)
+        _reserve_test_read(config, key, checkpoint_hash)
+    ledger = config.run_dir / "test_evaluation_ledger.jsonl"
     test_dataset, manifest = build_dataset(config, "test")
     test_loader = make_loader(test_dataset, config, shuffle=False)
     record, confusion, sample_rows = evaluate_loader(
@@ -349,6 +499,9 @@ def evaluate_checkpoint(config: ExperimentConfig, checkpoint_path: Path | None =
     )
     payload = {
         **record_dict(record),
+        "evaluation_key": key,
+        "renormalize": config.condition.renormalize,
+        "architecture": config.architecture,
         "experiment_id": config.experiment_id,
         "config_hash": config.config_hash,
         "training_config_hash": checkpoint["config_hash"],
@@ -363,7 +516,6 @@ def evaluate_checkpoint(config: ExperimentConfig, checkpoint_path: Path | None =
         "per_sample_path": _portable_path(sample_path),
         "evaluation_manifest_path": _portable_path(evaluation_manifest_path),
     }
-    _append_jsonl(config.run_dir / "locked_test_metrics.jsonl", payload)
     np.save(confusion_path, confusion)
     sample_path.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in sample_rows), encoding="utf-8"
@@ -398,18 +550,18 @@ def evaluate_checkpoint(config: ExperimentConfig, checkpoint_path: Path | None =
     )
     evaluation_manifest["manifest_hash"] = stable_hash(evaluation_manifest)
     write_json(evaluation_manifest_path, evaluation_manifest)
-    _append_jsonl(
-        ledger,
-        {
-            "evaluation_key": key,
-            "evaluated_at": payload["evaluated_at"],
-            "checkpoint_epoch": checkpoint["epoch"],
-            "checkpoint_sha256": payload["checkpoint_sha256"],
-            "split_hash": manifest["split_hash"],
-            "evaluation_manifest_path": _portable_path(evaluation_manifest_path),
-            "evaluation_manifest_hash": evaluation_manifest["manifest_hash"],
-        },
-    )
+    ledger_record = {
+        "evaluation_key": key,
+        "evaluated_at": payload["evaluated_at"],
+        "checkpoint_epoch": checkpoint["epoch"],
+        "checkpoint_sha256": payload["checkpoint_sha256"],
+        "split_hash": manifest["split_hash"],
+        "evaluation_manifest_path": _portable_path(evaluation_manifest_path),
+        "evaluation_manifest_hash": evaluation_manifest["manifest_hash"],
+    }
+    with _run_protocol_lock(config.run_dir, blocking=True):
+        _append_jsonl(config.run_dir / "locked_test_metrics.jsonl", payload)
+        _append_jsonl(ledger, ledger_record)
     return payload
 
 
@@ -457,6 +609,7 @@ def command_corrupt(args: argparse.Namespace) -> int:
 
 def command_evaluate_grid(args: argparse.Namespace) -> int:
     base = load_config(args.config)
+    args.manifest = _project_path(args.manifest)
     grid = yaml.safe_load(args.manifest.read_text(encoding="utf-8"))
     if "manifest_hash" in grid:
         expected_hash = stable_hash({key: value for key, value in grid.items() if key != "manifest_hash"})
@@ -484,22 +637,8 @@ def command_evaluate_grid(args: argparse.Namespace) -> int:
 
 
 def _bootstrap_interval(rows: list[dict[str, Any]], metric: str, seed: int = 20240723) -> tuple[float, float]:
-    by_seed: dict[int, list[float]] = {}
-    for row in rows:
-        by_seed.setdefault(int(row["seed"]), []).append(float(row[metric]))
-    seeds = sorted(by_seed)
-    rng = np.random.default_rng(seed)
-    estimates = np.empty(2000, dtype=np.float64)
-    for index in range(len(estimates)):
-        selected_seeds = rng.choice(seeds, size=len(seeds), replace=True)
-        seed_means = []
-        for selected in selected_seeds:
-            values = by_seed[int(selected)]
-            sampled = rng.choice(values, size=len(values), replace=True)
-            seed_means.append(float(np.mean(sampled)))
-        estimates[index] = float(np.mean(seed_means))
-    low, high = np.quantile(estimates, [0.025, 0.975])
-    return float(low), float(high)
+    from .statistics import crossed_interval
+    return crossed_interval(rows, metric, seed=seed)
 
 
 def _exact_signed_rank(values: list[float]) -> dict[str, float | int]:
@@ -589,13 +728,25 @@ def _holm_adjust(rows: list[dict[str, Any]], raw_field: str, output_field: str) 
 
 
 def command_analyze(args: argparse.Namespace) -> int:
+    args.runs_root = _project_path(args.runs_root)
+    args.output = _project_path(args.output)
     rows: list[dict[str, Any]] = []
     for path in sorted(args.runs_root.rglob("locked_test_metrics.jsonl")):
-        rows.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        rows.extend({"architecture": "vgg_small", **json.loads(line)} for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
     if not rows:
         raise FileNotFoundError(f"No locked_test_metrics.jsonl files below {args.runs_root}")
+    # Validate declared evidence before creating any derived result files.
+    # Relative records have one documented base (the repository root); never
+    # guess a replacement path from the analysis output location.
+    for row in rows:
+        if row.get("per_sample_path"):
+            evidence = _project_path(Path(row["per_sample_path"]))
+            if not evidence.is_file():
+                raise FileNotFoundError(f"Missing sealed per-example evidence: {evidence}")
+            if not evidence.stat().st_size:
+                raise ValueError(f"Empty sealed per-example evidence: {evidence}")
     groups: dict[tuple, list[dict[str, Any]]] = {}
-    keys = ("experiment_id", "dataset", "model", "time_steps", "condition", "severity")
+    keys = ("experiment_id", "dataset", "architecture", "model", "time_steps", "condition", "severity")
     for row in rows:
         groups.setdefault(tuple(row[key] for key in keys), []).append(row)
     summaries: list[dict[str, Any]] = []
@@ -629,7 +780,7 @@ def command_analyze(args: argparse.Namespace) -> int:
             summary[f"{metric}_ci_high"] = high
         summaries.append(summary)
     clean_lookup = {
-        (row["experiment_id"], row["dataset"], row["model"], row["time_steps"]): row["accuracy_mean"]
+        (row["experiment_id"], row["dataset"], row["architecture"], row["model"], row["time_steps"]): row["accuracy_mean"]
         for row in summaries
         if row["condition"] == "clean"
     }
@@ -637,6 +788,7 @@ def command_analyze(args: argparse.Namespace) -> int:
         same_experiment_key = (
             row["experiment_id"],
             row["dataset"],
+            row["architecture"],
             row["model"],
             row["time_steps"],
         )
@@ -647,6 +799,7 @@ def command_analyze(args: argparse.Namespace) -> int:
             reference_key = (
                 "temporal_native",
                 row["dataset"],
+                row["architecture"],
                 row["model"],
                 row["time_steps"],
             )
@@ -673,7 +826,7 @@ def command_analyze(args: argparse.Namespace) -> int:
     robustness_groups: dict[tuple, list[dict[str, Any]]] = {}
     for row in summaries:
         if row["condition"] != "clean":
-            key = (row["experiment_id"], row["dataset"], row["model"], row["time_steps"], row["condition"])
+            key = (row["experiment_id"], row["dataset"], row["architecture"], row["model"], row["time_steps"], row["condition"])
             robustness_groups.setdefault(key, []).append(row)
     robustness_rows: list[dict[str, Any]] = []
     for key, selected in sorted(robustness_groups.items()):
@@ -689,7 +842,7 @@ def command_analyze(args: argparse.Namespace) -> int:
         worst_accuracy = float(np.min(y[1:] if len(y) > len(ordered) else y))
         robustness_rows.append(
             {
-                **dict(zip(("experiment_id", "dataset", "model", "time_steps", "condition"), key)),
+                **dict(zip(("experiment_id", "dataset", "architecture", "model", "time_steps", "condition"), key)),
                 "clean_reference_experiment_id": ordered[0].get(
                     "clean_reference_experiment_id"
                 ),
@@ -722,6 +875,7 @@ def command_analyze(args: argparse.Namespace) -> int:
             writer.writerows(robustness_rows)
 
     pair_key_fields = (
+        "architecture",
         "experiment_id",
         "dataset",
         "time_steps",
@@ -742,6 +896,7 @@ def command_analyze(args: argparse.Namespace) -> int:
     paired_group_fields = (
         "experiment_id",
         "dataset",
+        "architecture",
         "model",
         "time_steps",
         "condition",
@@ -840,12 +995,12 @@ def command_analyze(args: argparse.Namespace) -> int:
             continue
         sample_path = _project_path(Path(sample_path_value))
         if not sample_path.exists():
-            continue
+            raise FileNotFoundError(f"Missing sealed per-example evidence: {sample_path}")
         samples_for_evaluation = [
             json.loads(line) for line in sample_path.read_text(encoding="utf-8").splitlines() if line.strip()
         ]
         prefix = (
-            metric_row["experiment_id"], metric_row["dataset"], metric_row["model"], metric_row["time_steps"],
+            metric_row["experiment_id"], metric_row["dataset"], metric_row["architecture"], metric_row["model"], metric_row["time_steps"],
             metric_row["condition"], metric_row["severity"],
         )
         for sample in samples_for_evaluation:
@@ -857,6 +1012,7 @@ def command_analyze(args: argparse.Namespace) -> int:
             confusion_key = (
                 metric_row["experiment_id"],
                 metric_row["dataset"],
+                metric_row["architecture"],
                 metric_row["model"],
                 metric_row["time_steps"],
             )
@@ -911,7 +1067,7 @@ def command_analyze(args: argparse.Namespace) -> int:
                 {
                     **dict(
                         zip(
-                            ("experiment_id", "dataset", "model", "time_steps"),
+                            ("experiment_id", "dataset", "architecture", "model", "time_steps"),
                             key,
                         )
                     ),
@@ -947,6 +1103,7 @@ def command_analyze(args: argparse.Namespace) -> int:
         training_rows.append(
             {
                 **row,
+                "architecture": row.get("architecture", "vgg_small"),
                 "experiment_id": row.get("experiment_id", relative.parts[0]),
                 "condition": str(condition.get("name", "clean")),
                 "severity": float(condition.get("severity", 0.0)),
@@ -957,6 +1114,7 @@ def command_analyze(args: argparse.Namespace) -> int:
     training_keys = (
         "experiment_id",
         "dataset",
+        "architecture",
         "model",
         "time_steps",
         "condition",
@@ -1008,6 +1166,7 @@ def command_analyze(args: argparse.Namespace) -> int:
     source_paths = sorted(args.runs_root.rglob("locked_test_metrics.jsonl"))
     training_source_paths = sorted(args.runs_root.rglob("train_result.json"))
     aggregate_manifest = {
+        "schema_version": 2,
         "created_at": utc_now(),
         "source_root": str(args.runs_root),
         "source_files": [
@@ -1017,13 +1176,19 @@ def command_analyze(args: argparse.Namespace) -> int:
             }
             for path in source_paths + training_source_paths
         ],
+        "artifacts": {
+            "summary_csv": {
+                "path": _portable_path(args.output),
+                "sha256": file_sha256(args.output),
+            },
+        },
         "rows": len(rows),
         "groups": len(summaries),
         "training_rows": len(training_rows),
         "training_groups": len(training_summaries),
         "pooled_clean_confusion_groups": len(pooled_clean_confusions),
         "pooled_clean_confusion_nonzero_cells": len(confusion_rows),
-        "bootstrap": "hierarchical seed then within-seed draw resampling, 2000 replicates",
+        "bootstrap": "crossed seed and shared-draw resampling, 2000 replicates, RNG 20240723, percentile 2.5 and 97.5",
         "paired_tests": (
             "Exact signed-rank tests on per-seed mean paired deltas; zero "
             "differences dropped; raw greater and two-sided p-values with "
@@ -1038,7 +1203,12 @@ def command_analyze(args: argparse.Namespace) -> int:
 
 def command_temporal_influence(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    model, checkpoint, checkpoint_path = _load_checkpoint(config, args.checkpoint)
+    key = "temporal_influence|clean"
+    with _run_protocol_lock(config.run_dir):
+        _assert_test_available(config, key)
+        model, checkpoint, checkpoint_path = _load_checkpoint(config, args.checkpoint)
+        checkpoint_hash = _validate_completed_training(config, checkpoint, checkpoint_path)
+        _reserve_test_read(config, key, checkpoint_hash)
     dataset, manifest = build_dataset(config, "test", condition=ConditionConfig())
     loader = make_loader(dataset, config, shuffle=False)
     device = torch.device(config.device)
@@ -1226,7 +1396,7 @@ def build_parser() -> argparse.ArgumentParser:
     grid.add_argument("--skip-completed", action="store_true")
     grid.set_defaults(function=command_evaluate_grid)
 
-    analyze = subparsers.add_parser("analyze", help="Aggregate locked-test metrics with hierarchical intervals")
+    analyze = subparsers.add_parser("analyze", help="Aggregate locked-test metrics with crossed seed/draw intervals")
     analyze.add_argument("--runs-root", type=Path, required=True)
     analyze.add_argument("--output", type=Path, required=True)
     analyze.set_defaults(function=command_analyze)

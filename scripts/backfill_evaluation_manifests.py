@@ -191,7 +191,7 @@ def backfill_run(metrics_path: Path, *, dry_run: bool) -> list[dict[str, str]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--runs-root", type=Path, default=PROJECT / "runs_revision"
+        "--runs-root", type=Path, default=PROJECT / "runs_baseline"
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--output", type=Path)

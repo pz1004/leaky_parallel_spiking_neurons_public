@@ -1,0 +1,30 @@
+amp: false
+architecture: vgg_small_half
+batch_size: 16
+cache_frames: true
+condition:
+  draw: 0
+  name: clean
+  renormalize: false
+  severity: 0.0
+data_root: ../data
+dataset: dvs_gesture
+device: cuda:0
+effective_batch_size: 64
+epochs: 200
+experiment_id: architecture_study
+frame_cache_root: frame_cache
+image_size: 128
+learning_rate: 0.001
+model: lpsn_a2_soft
+model_params: {}
+num_workers: 4
+output_root: runs_extension
+patience: 15
+schema_version: 1
+seed: 1024
+selection_metric: macro_f1
+smoke_samples: 0
+split_manifest: manifests/dvs_gesture.json
+time_steps: 32
+weight_decay: 0.0

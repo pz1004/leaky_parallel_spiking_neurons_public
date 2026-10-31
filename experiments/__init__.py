@@ -1,4 +1,4 @@
-"""Reproducible experiment pipeline for the LP-SN reviewer studies."""
+"""Reproducible experiment pipeline for the LP-SN study."""
 
 from .config import ExperimentConfig, MetricsRecord, RunManifest, load_config
 

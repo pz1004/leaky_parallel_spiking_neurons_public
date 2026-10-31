@@ -10,3 +10,9 @@ generated_configs*/
 orchestration_logs/
 influence/
 benchmarks/
+reproduction_outputs/
+runs_second_revision/
+frame_cache/
+runs_baseline/
+runs_smoke/
+runs_extension/

@@ -2,6 +2,8 @@
 
 from .hard_reset_diagnostics import (
     hard_reset_lif_reference,
+    hard_reset_reference_bound,
+    hard_reset_reference_stats,
     prop2b_hard_reset_reference_bound,
     prop2b_hard_reset_reference_stats,
 )
@@ -33,6 +35,8 @@ __all__ = [
     "build_lpsn_neuron",
     "canonical_variant",
     "hard_reset_lif_reference",
+    "hard_reset_reference_bound",
+    "hard_reset_reference_stats",
     "prop2b_hard_reset_reference_bound",
     "prop2b_hard_reset_reference_stats",
     "soft_reset_correction",

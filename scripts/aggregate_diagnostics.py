@@ -17,10 +17,11 @@ sys.path.insert(0, str(PROJECT))
 
 from experiments.config import file_sha256, load_config, stable_hash  # noqa: E402
 from experiments.data import DATASET_META, load_split_manifest  # noqa: E402
+from experiments.release_paths import portable_path, resolve_path  # noqa: E402
 
 
 def project_path(path: Path) -> Path:
-    return path if path.is_absolute() else PROJECT / path
+    return resolve_path(path)
 
 
 def run_dir(config) -> Path:
@@ -95,6 +96,8 @@ def main() -> int:
         "--output-root", type=Path, default=PROJECT / "aggregates"
     )
     args = parser.parse_args()
+    args.configs_root = resolve_path(args.configs_root)
+    args.output_root = resolve_path(args.output_root)
 
     benchmarks: list[dict[str, Any]] = []
     influence_timesteps: list[dict[str, Any]] = []
@@ -108,6 +111,7 @@ def main() -> int:
         common = {
             "experiment_id": config.experiment_id,
             "dataset": config.dataset,
+            "architecture": config.architecture,
             "model": config.model,
             "seed": config.seed,
             "time_steps": config.time_steps,
@@ -132,7 +136,7 @@ def main() -> int:
             )
             sources.append(
                 {
-                    "path": str(benchmark_path.relative_to(PROJECT)),
+                    "path": portable_path(benchmark_path),
                     "sha256": file_sha256(benchmark_path),
                 }
             )
@@ -159,7 +163,7 @@ def main() -> int:
             )
             sources.append(
                 {
-                    "path": str(influence_path.relative_to(PROJECT)),
+                    "path": portable_path(influence_path),
                     "sha256": file_sha256(influence_path),
                 }
             )
@@ -198,14 +202,14 @@ def main() -> int:
             )
         sources.append(
             {
-                "path": str(split_path.relative_to(PROJECT)),
+                "path": portable_path(split_path),
                 "sha256": file_sha256(split_path),
             }
         )
 
     benchmark_summary = summarize(
         benchmarks,
-        group_keys=("experiment_id", "dataset", "model", "time_steps"),
+        group_keys=("experiment_id", "dataset", "architecture", "model", "time_steps"),
         metrics=(
             "latency_ms_per_batch",
             "throughput_samples_per_second",
@@ -217,6 +221,7 @@ def main() -> int:
         group_keys=(
             "experiment_id",
             "dataset",
+            "architecture",
             "model",
             "time_steps",
             "timestep",
@@ -225,7 +230,7 @@ def main() -> int:
     )
     horizon_summary = summarize(
         influence_horizons,
-        group_keys=("experiment_id", "dataset", "model", "time_steps"),
+        group_keys=("experiment_id", "dataset", "architecture", "model", "time_steps"),
         metrics=("effective_horizon_90_percent",),
     )
     write_csv(args.output_root / "benchmark_results.csv", benchmarks)

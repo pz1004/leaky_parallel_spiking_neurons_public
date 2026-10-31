@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 from scripts import acquire_hardvs, prepare_hardvs
+from scripts.audit_empirical_package import validate_hardvs_source
 
 
 class HardvsIntegrityTests(unittest.TestCase):
@@ -47,6 +48,31 @@ class HardvsIntegrityTests(unittest.TestCase):
                 if key != "valid_unassigned_archive_npz"
             },
         )
+
+    def test_fresh_source_accepts_new_provenance_but_keeps_content_checks(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        spec = json.loads((project / "manifests/hardvs_compact_archive.json").read_text())
+        historical = json.loads((project / "manifests/hardvs_source_audit.json").read_text())
+        split = json.loads((project / "manifests/hardvs.json").read_text())
+        integrity = dict(split["dataset_integrity"])
+        integrity.update(acquisition_record_hash="1" * 64, record_hash="2" * 64,
+                         preparation_git_commit="3" * 40, preparation_script_sha256="4" * 64)
+        self.assertEqual(validate_hardvs_source(integrity, spec), [])
+        self.assertTrue(validate_hardvs_source(integrity, spec, historical=historical))
+        integrity["archive_sha256"] = "0" * 64
+        self.assertTrue(validate_hardvs_source(integrity, spec))
+
+    def test_fresh_official_source_uses_official_population(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        spec = json.loads((project / "manifests/hardvs_compact_archive.json").read_text())
+        counts = {row["name"].split("_", 1)[0]: row["samples"] for row in spec["labels"]}
+        counts["assigned"] = spec["official_assigned_samples"]
+        integrity = {"integrity_mode": "official_exact", "archive_md5": spec["official_archive_md5"],
+                     "effective_counts": counts, "excluded_sample_ids": [],
+                     **{key: "1" * 64 for key in ("archive_sha256", "acquisition_record_hash", "record_hash", "preparation_script_sha256")}}
+        self.assertEqual(validate_hardvs_source(integrity, spec), [])
+        integrity["excluded_sample_ids"] = ["unexpected/sample"]
+        self.assertTrue(validate_hardvs_source(integrity, spec))
 
     def test_acquisition_reconciles_missing_assigned_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

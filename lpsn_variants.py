@@ -1,7 +1,7 @@
 """Named LP-SN variants and a small construction helper.
 
-This file intentionally contains only reusable configuration logic. It does
-not depend on the benchmark harness used to generate manuscript runs.
+This module provides reusable configuration logic independently of the
+benchmark harness.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ LPSN_VARIANTS: dict[str, dict[str, Any]] = {
         "learnable_residual": False,
         "residual_mask": "causal",
         "learnable_bias": False,
-        # Manuscript A2 prioritizes Prop. 2a exactness. The optional
+        # The reference A2 configuration uses Proposition 2's fixed-parameter dynamics.
         # "tentative" strategy in LPSpikingNeuron is a fully parallel
         # approximation and is not the A2 condition used in reported tables.
         "soft_reset_strategy": "exact_detached",
@@ -222,8 +222,8 @@ def temporal_profile_for_strategy(soft_reset_strategy: str) -> str:
 def available_variants(*, include_diagnostics: bool = False) -> tuple[str, ...]:
     """Return canonical LP-SN variant names.
 
-    By default this returns the manuscript A1-A5 variants. Pass
-    ``include_diagnostics=True`` to include residual-rescue controls.
+    By default this returns the reference A1-A5 variants. Pass
+    ``include_diagnostics=True`` to include residual-learning controls.
     """
     if include_diagnostics:
         return (*CORE_LPSN_VARIANTS, *DIAGNOSTIC_LPSN_VARIANTS)

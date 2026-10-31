@@ -1,4 +1,4 @@
-# Manuscript runtime pins. The explicit CUDA 12.8 wheel index avoids resolving
+# Reference runtime pins. The explicit CUDA 12.8 wheel index avoids resolving
 # a CPU-only build or a nonexistent pytorch-cuda=12.8 conda metapackage.
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.10.0+cu128
